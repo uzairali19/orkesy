@@ -1,0 +1,6 @@
+[workspace]
+members = [
+  "orkesy-core",
+  "orkesy-cli",
+]
+resolver = "2"
