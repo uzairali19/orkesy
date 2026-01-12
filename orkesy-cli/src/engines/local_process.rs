@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
@@ -13,6 +13,7 @@ use orkesy_core::config::ServiceConfig;
 use orkesy_core::engine::{Engine, EngineCommand};
 use orkesy_core::model::{RuntimeGraph, ServiceId, ServiceStatus};
 use orkesy_core::reducer::{EventEnvelope, RuntimeEvent};
+use orkesy_core::state::LogStream;
 
 /// Handle to a running process
 struct ProcessHandle {
@@ -129,6 +130,7 @@ impl LocalProcessEngine {
                         at: SystemTime::now(),
                         event: RuntimeEvent::LogLine {
                             id: service_id.clone(),
+                            stream: LogStream::Stdout,
                             text: line,
                         },
                     });
@@ -150,7 +152,8 @@ impl LocalProcessEngine {
                         at: SystemTime::now(),
                         event: RuntimeEvent::LogLine {
                             id: service_id.clone(),
-                            text: format!("[stderr] {}", line),
+                            stream: LogStream::Stderr,
+                            text: line,
                         },
                     });
                 }
@@ -218,7 +221,12 @@ impl Engine for LocalProcessEngine {
         graph: RuntimeGraph,
     ) {
         // Emit topology loaded
-        self.emit(&event_tx, RuntimeEvent::TopologyLoaded { graph: graph.clone() });
+        self.emit(
+            &event_tx,
+            RuntimeEvent::TopologyLoaded {
+                graph: graph.clone(),
+            },
+        );
 
         // Auto-start services marked for autostart
         for (id, node) in &graph.nodes {
@@ -253,6 +261,7 @@ impl Engine for LocalProcessEngine {
                             &event_tx,
                             RuntimeEvent::LogLine {
                                 id: id.clone(),
+                                stream: LogStream::System,
                                 text: format!("[error] failed to start: {}", e),
                             },
                         );
@@ -289,6 +298,7 @@ impl Engine for LocalProcessEngine {
                             &event_tx,
                             RuntimeEvent::LogLine {
                                 id,
+                                stream: LogStream::System,
                                 text: format!("process exited with code: {:?}", code),
                             },
                         );
@@ -316,6 +326,7 @@ impl Engine for LocalProcessEngine {
                                     &event_tx,
                                     RuntimeEvent::LogLine {
                                         id,
+                                        stream: LogStream::System,
                                         text: "[warn] already running".into(),
                                     },
                                 );
@@ -352,6 +363,7 @@ impl Engine for LocalProcessEngine {
                                         &event_tx,
                                         RuntimeEvent::LogLine {
                                             id,
+                                            stream: LogStream::System,
                                             text: format!("[error] {}", e),
                                         },
                                     );
@@ -364,6 +376,7 @@ impl Engine for LocalProcessEngine {
                                 &event_tx,
                                 RuntimeEvent::LogLine {
                                     id: id.clone(),
+                                    stream: LogStream::System,
                                     text: "stopping...".into(),
                                 },
                             );
@@ -383,6 +396,7 @@ impl Engine for LocalProcessEngine {
                                         &event_tx,
                                         RuntimeEvent::LogLine {
                                             id,
+                                            stream: LogStream::System,
                                             text: format!("[warn] {}", e),
                                         },
                                     );
@@ -419,6 +433,7 @@ impl Engine for LocalProcessEngine {
                                         &event_tx,
                                         RuntimeEvent::LogLine {
                                             id,
+                                            stream: LogStream::System,
                                             text: "restarted".into(),
                                         },
                                     );
@@ -435,6 +450,7 @@ impl Engine for LocalProcessEngine {
                                         &event_tx,
                                         RuntimeEvent::LogLine {
                                             id,
+                                            stream: LogStream::System,
                                             text: format!("[error] restart failed: {}", e),
                                         },
                                     );
@@ -456,6 +472,7 @@ impl Engine for LocalProcessEngine {
                                         &event_tx,
                                         RuntimeEvent::LogLine {
                                             id,
+                                            stream: LogStream::System,
                                             text: "killed".into(),
                                         },
                                     );
@@ -465,6 +482,7 @@ impl Engine for LocalProcessEngine {
                                         &event_tx,
                                         RuntimeEvent::LogLine {
                                             id,
+                                            stream: LogStream::System,
                                             text: format!("[warn] {}", e),
                                         },
                                     );
@@ -479,6 +497,7 @@ impl Engine for LocalProcessEngine {
                                     &event_tx,
                                     RuntimeEvent::LogLine {
                                         id: id.clone(),
+                                        stream: LogStream::System,
                                         text: "stopping...".into(),
                                     },
                                 );
@@ -521,6 +540,7 @@ impl Engine for LocalProcessEngine {
                                             &event_tx,
                                             RuntimeEvent::LogLine {
                                                 id,
+                                                stream: LogStream::System,
                                                 text: format!("[error] {}", e),
                                             },
                                         );
@@ -539,6 +559,7 @@ impl Engine for LocalProcessEngine {
                                 &event_tx,
                                 RuntimeEvent::LogLine {
                                     id: id.clone(),
+                                    stream: LogStream::System,
                                     text: format!("$ {}", shown),
                                 },
                             );
@@ -548,6 +569,7 @@ impl Engine for LocalProcessEngine {
                                     &event_tx,
                                     RuntimeEvent::LogLine {
                                         id,
+                                        stream: LogStream::System,
                                         text: "[error] empty command".into(),
                                     },
                                 );
@@ -570,6 +592,7 @@ impl Engine for LocalProcessEngine {
                                                     &event_tx,
                                                     RuntimeEvent::LogLine {
                                                         id: id.clone(),
+                                                        stream: LogStream::Stdout,
                                                         text: line.to_string(),
                                                     },
                                                 );
@@ -584,7 +607,8 @@ impl Engine for LocalProcessEngine {
                                                     &event_tx,
                                                     RuntimeEvent::LogLine {
                                                         id: id.clone(),
-                                                        text: format!("[stderr] {}", line),
+                                                        stream: LogStream::Stderr,
+                                                        text: line.to_string(),
                                                     },
                                                 );
                                             }
@@ -598,7 +622,7 @@ impl Engine for LocalProcessEngine {
                                     };
                                     self.emit(
                                         &event_tx,
-                                        RuntimeEvent::LogLine { id, text: status },
+                                        RuntimeEvent::LogLine { id, stream: LogStream::System, text: status },
                                     );
                                 }
                                 Err(e) => {
@@ -606,6 +630,7 @@ impl Engine for LocalProcessEngine {
                                         &event_tx,
                                         RuntimeEvent::LogLine {
                                             id,
+                                            stream: LogStream::System,
                                             text: format!("[error] {}", e),
                                         },
                                     );
@@ -614,7 +639,7 @@ impl Engine for LocalProcessEngine {
                         }
 
                         EngineCommand::EmitLog { id, text } => {
-                            self.emit(&event_tx, RuntimeEvent::LogLine { id, text });
+                            self.emit(&event_tx, RuntimeEvent::LogLine { id, stream: LogStream::System, text });
                         }
                     }
                 }

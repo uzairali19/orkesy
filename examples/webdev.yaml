@@ -1,0 +1,51 @@
+# Web development stack example
+version: 1
+
+project:
+  name: my-web-app
+
+units:
+  api:
+    name: "API Server"
+    kind: process
+    cwd: ./backend
+    start: "python -m http.server 8000"
+    port: 8000
+    env:
+      DEBUG: "true"
+      DATABASE_URL: "postgres://localhost:5432/myapp"
+    health:
+      type: tcp
+      port: 8000
+      interval_ms: 3000
+    autostart: true
+    description: "Backend API server"
+
+  frontend:
+    name: "Frontend Dev"
+    kind: process
+    cwd: ./frontend
+    start: "python -m http.server 3000"
+    port: 3000
+    install:
+      - "npm install"
+    health:
+      type: tcp
+      port: 3000
+      interval_ms: 3000
+    autostart: true
+    description: "Frontend dev server"
+
+  worker:
+    name: "Background Worker"
+    start: "while true; do echo 'Processing jobs...'; sleep 5; done"
+    autostart: false
+    description: "Async job processor"
+
+edges:
+  - from: frontend
+    to: api
+    kind: depends_on
+  - from: worker
+    to: api
+    kind: depends_on

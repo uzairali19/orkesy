@@ -1,0 +1,99 @@
+# Monorepo with multiple services
+version: 1
+
+project:
+  name: acme-platform
+
+units:
+  # Databases
+  postgres:
+    name: "PostgreSQL"
+    start: "echo '[postgres] Running on :5432'; while true; do sleep 10; done"
+    port: 5432
+    health:
+      type: tcp
+      port: 5432
+      interval_ms: 5000
+    autostart: true
+    description: "Primary database"
+
+  # Backend services
+  auth:
+    name: "Auth Service"
+    cwd: ./services/auth
+    start: "echo '[auth] Starting auth service on :8001'; while true; do echo '[auth] heartbeat'; sleep 3; done"
+    port: 8001
+    env:
+      PORT: "8001"
+      JWT_SECRET: "dev-secret"
+    health:
+      type: tcp
+      port: 8001
+      interval_ms: 3000
+    autostart: true
+    description: "Authentication & authorization"
+
+  api:
+    name: "API Gateway"
+    cwd: ./services/api
+    start: "echo '[api] Starting API gateway on :8000'; while true; do echo '[api] request handled'; sleep 2; done"
+    port: 8000
+    env:
+      PORT: "8000"
+      AUTH_URL: "http://localhost:8001"
+    health:
+      type: tcp
+      port: 8000
+      interval_ms: 3000
+    autostart: true
+    description: "Main API gateway"
+
+  notifications:
+    name: "Notifications"
+    cwd: ./services/notifications
+    start: "echo '[notifications] Notification worker started'; while true; do echo '[notifications] checking queue...'; sleep 5; done"
+    autostart: false
+    description: "Push & email notifications"
+
+  # Frontend
+  web:
+    name: "Web App"
+    cwd: ./apps/web
+    start: "echo '[web] Dev server on :3000'; while true; do echo '[web] HMR ready'; sleep 4; done"
+    port: 3000
+    install:
+      - "pnpm install"
+    health:
+      type: tcp
+      port: 3000
+      interval_ms: 3000
+    autostart: true
+    description: "React web application"
+
+  admin:
+    name: "Admin Dashboard"
+    cwd: ./apps/admin
+    start: "echo '[admin] Admin UI on :3001'; while true; do sleep 5; done"
+    port: 3001
+    autostart: false
+    description: "Internal admin panel"
+
+edges:
+  - from: auth
+    to: postgres
+    kind: depends_on
+  - from: api
+    to: auth
+    kind: depends_on
+  - from: api
+    to: postgres
+    kind: depends_on
+  - from: notifications
+    to: postgres
+    kind: depends_on
+  - from: web
+    to: api
+    kind: depends_on
+  - from: admin
+    to: api
+    kind: depends_on

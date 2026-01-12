@@ -7,6 +7,10 @@ use crate::model::{
     DesiredState, Edge, EdgeKind, HealthStatus, ObservedState, RuntimeGraph, ServiceId,
     ServiceKind, ServiceNode, ServiceStatus,
 };
+use crate::unit::{
+    EdgeKind as UnitEdgeKind, HealthCheck as UnitHealthCheck, StopBehavior, StopSignal, Unit,
+    UnitEdge, UnitKind,
+};
 
 /// Health check configuration
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -146,8 +150,15 @@ impl std::fmt::Display for ConfigError {
         match self {
             Self::Io(e) => write!(f, "IO error: {}", e),
             Self::Yaml(e) => write!(f, "YAML parse error: {}", e),
-            Self::InvalidDependency { service, dependency } => {
-                write!(f, "service '{}' depends on unknown service '{}'", service, dependency)
+            Self::InvalidDependency {
+                service,
+                dependency,
+            } => {
+                write!(
+                    f,
+                    "service '{}' depends on unknown service '{}'",
+                    service, dependency
+                )
             }
             Self::MissingCommand { service } => {
                 write!(f, "service '{}' has no command specified", service)
@@ -237,7 +248,9 @@ impl OrkesyConfig {
 
             // Ensure command is not empty
             if svc.command.is_empty() {
-                return Err(ConfigError::MissingCommand { service: id.clone() });
+                return Err(ConfigError::MissingCommand {
+                    service: id.clone(),
+                });
             }
         }
 
@@ -386,6 +399,366 @@ impl OrkesyConfig {
         }
 
         result
+    }
+}
+
+// ============================================================================
+// NEW UNITS-BASED CONFIGURATION (orkesy.yml v1)
+// ============================================================================
+
+/// Project metadata in new config format
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ProjectConfig {
+    pub name: String,
+}
+
+/// Unit definition in the new config format
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct UnitConfig {
+    /// Human-readable display name
+    #[serde(default)]
+    pub name: Option<String>,
+
+    /// Kind of unit (process, docker, generic)
+    #[serde(default)]
+    pub kind: Option<String>,
+
+    /// Working directory
+    #[serde(default)]
+    pub cwd: Option<PathBuf>,
+
+    /// Environment variables
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+
+    /// Install commands
+    #[serde(default)]
+    pub install: Vec<String>,
+
+    /// Start command (shell string)
+    pub start: String,
+
+    /// Stop behavior (signal name or command)
+    #[serde(default)]
+    pub stop: Option<String>,
+
+    /// Custom logs command (for docker units)
+    #[serde(default)]
+    pub logs: Option<String>,
+
+    /// Port the unit listens on
+    #[serde(default)]
+    pub port: Option<u16>,
+
+    /// Health check configuration
+    #[serde(default)]
+    pub health: Option<UnitHealthConfig>,
+
+    /// Description
+    #[serde(default)]
+    pub description: Option<String>,
+
+    /// Auto-start when orkesy launches (defaults to false)
+    #[serde(default)]
+    pub autostart: bool,
+}
+
+/// Health check config in new format
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum UnitHealthConfig {
+    Tcp {
+        #[serde(default = "default_health_port")]
+        port: u16,
+        #[serde(default = "default_health_interval")]
+        interval_ms: u64,
+    },
+    Http {
+        url: String,
+        #[serde(default = "default_health_interval")]
+        interval_ms: u64,
+        #[serde(default = "default_health_timeout")]
+        timeout_ms: u64,
+    },
+    Exec {
+        command: String,
+        #[serde(default = "default_health_interval")]
+        interval_ms: u64,
+    },
+}
+
+fn default_health_port() -> u16 {
+    8000
+}
+
+/// Edge definition in new config format
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct EdgeConfig {
+    pub from: String,
+    pub to: String,
+    #[serde(default)]
+    pub kind: Option<String>,
+}
+
+/// New root config format (orkesy.yml)
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct OrkesyConfigV2 {
+    /// Version (should be 1)
+    pub version: u32,
+
+    /// Project metadata
+    #[serde(default)]
+    pub project: Option<ProjectConfig>,
+
+    /// Unit definitions
+    #[serde(default)]
+    pub units: BTreeMap<String, UnitConfig>,
+
+    /// Edge definitions
+    #[serde(default)]
+    pub edges: Vec<EdgeConfig>,
+}
+
+impl OrkesyConfigV2 {
+    /// Load from file
+    pub fn load(path: &Path) -> Result<Self, ConfigError> {
+        let content = std::fs::read_to_string(path)?;
+        let config: OrkesyConfigV2 = serde_yaml::from_str(&content)?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Load from string
+    pub fn from_str(content: &str) -> Result<Self, ConfigError> {
+        let config: OrkesyConfigV2 = serde_yaml::from_str(content)?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Validate the configuration
+    fn validate(&self) -> Result<(), ConfigError> {
+        // Check all edge references exist
+        for edge in &self.edges {
+            if !self.units.contains_key(&edge.from) {
+                return Err(ConfigError::InvalidDependency {
+                    service: edge.from.clone(),
+                    dependency: "edge 'from' not found".into(),
+                });
+            }
+            if !self.units.contains_key(&edge.to) {
+                return Err(ConfigError::InvalidDependency {
+                    service: edge.to.clone(),
+                    dependency: "edge 'to' not found".into(),
+                });
+            }
+        }
+
+        // Check start commands are not empty
+        for (id, unit) in &self.units {
+            if unit.start.trim().is_empty() {
+                return Err(ConfigError::MissingCommand {
+                    service: id.clone(),
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Convert to Vec<Unit> for use with adapters
+    pub fn to_units(&self) -> Vec<Unit> {
+        self.units
+            .iter()
+            .map(|(id, cfg)| {
+                let kind = match cfg.kind.as_deref() {
+                    Some("docker") => UnitKind::Docker,
+                    Some("generic") => UnitKind::Generic,
+                    _ => UnitKind::Process,
+                };
+
+                let stop = cfg
+                    .stop
+                    .as_ref()
+                    .map(|s| match s.to_uppercase().as_str() {
+                        "SIGINT" | "INT" => StopBehavior::Signal(StopSignal::SigInt),
+                        "SIGTERM" | "TERM" => StopBehavior::Signal(StopSignal::SigTerm),
+                        "SIGKILL" | "KILL" => StopBehavior::Signal(StopSignal::SigKill),
+                        _ => StopBehavior::Command(s.clone()),
+                    })
+                    .unwrap_or(StopBehavior::Signal(StopSignal::SigInt));
+
+                let health = cfg.health.as_ref().map(|h| match h {
+                    UnitHealthConfig::Tcp { port, interval_ms } => UnitHealthCheck::Tcp {
+                        port: *port,
+                        interval_ms: *interval_ms,
+                    },
+                    UnitHealthConfig::Http {
+                        url,
+                        interval_ms,
+                        timeout_ms,
+                    } => UnitHealthCheck::Http {
+                        url: url.clone(),
+                        interval_ms: *interval_ms,
+                        timeout_ms: *timeout_ms,
+                    },
+                    UnitHealthConfig::Exec {
+                        command,
+                        interval_ms,
+                    } => UnitHealthCheck::Exec {
+                        command: command.clone(),
+                        interval_ms: *interval_ms,
+                    },
+                });
+
+                Unit {
+                    id: id.clone(),
+                    name: cfg.name.clone(),
+                    kind,
+                    cwd: cfg.cwd.clone(),
+                    env: cfg.env.clone(),
+                    install: cfg.install.clone(),
+                    start: cfg.start.clone(),
+                    stop,
+                    logs: cfg.logs.clone(),
+                    health,
+                    description: cfg.description.clone(),
+                    port: cfg.port,
+                    autostart: cfg.autostart,
+                }
+            })
+            .collect()
+    }
+
+    /// Convert to Vec<UnitEdge>
+    pub fn to_edges(&self) -> Vec<UnitEdge> {
+        self.edges
+            .iter()
+            .map(|e| UnitEdge {
+                from: e.from.clone(),
+                to: e.to.clone(),
+                kind: match e.kind.as_deref() {
+                    Some("talks_to") => UnitEdgeKind::TalksTo,
+                    Some("produces") => UnitEdgeKind::Produces,
+                    Some("consumes") => UnitEdgeKind::Consumes,
+                    _ => UnitEdgeKind::DependsOn,
+                },
+            })
+            .collect()
+    }
+
+    /// Get project name
+    pub fn project_name(&self) -> Option<&str> {
+        self.project.as_ref().map(|p| p.name.as_str())
+    }
+}
+
+/// Try to load config from either old (services) or new (units) format
+pub fn load_config(path: &Path) -> Result<LoadedConfig, ConfigError> {
+    let content = std::fs::read_to_string(path)?;
+
+    // Try new format first (has `units:`)
+    if content.contains("units:") {
+        let config = OrkesyConfigV2::from_str(&content)?;
+        return Ok(LoadedConfig::V2(config));
+    }
+
+    // Fall back to old format
+    let config = OrkesyConfig::from_str(&content)?;
+    Ok(LoadedConfig::V1(config))
+}
+
+/// Enum to hold either config format
+pub enum LoadedConfig {
+    V1(OrkesyConfig),
+    V2(OrkesyConfigV2),
+}
+
+impl LoadedConfig {
+    /// Convert to Units (works for both formats)
+    pub fn to_units(&self) -> Vec<Unit> {
+        match self {
+            LoadedConfig::V1(config) => {
+                // Convert old ServiceConfig to Unit
+                config
+                    .services
+                    .iter()
+                    .map(|(id, svc)| {
+                        let kind = match svc.kind.to_lowercase().as_str() {
+                            "docker" => UnitKind::Docker,
+                            _ => UnitKind::Process,
+                        };
+
+                        Unit {
+                            id: id.clone(),
+                            name: svc.name.clone(),
+                            kind,
+                            cwd: svc.cwd.clone(),
+                            env: svc.env.clone(),
+                            install: vec![],
+                            start: svc.command.join(" "),
+                            stop: StopBehavior::Signal(StopSignal::SigTerm),
+                            logs: None,
+                            health: svc.health_check.as_ref().map(|h| match h {
+                                HealthCheck::Tcp { interval_ms, .. } => UnitHealthCheck::Tcp {
+                                    port: svc.port.unwrap_or(8000),
+                                    interval_ms: *interval_ms,
+                                },
+                                HealthCheck::Http {
+                                    path,
+                                    interval_ms,
+                                    timeout_ms,
+                                } => UnitHealthCheck::Http {
+                                    url: format!(
+                                        "http://localhost:{}{}",
+                                        svc.port.unwrap_or(8000),
+                                        path
+                                    ),
+                                    interval_ms: *interval_ms,
+                                    timeout_ms: *timeout_ms,
+                                },
+                                HealthCheck::Exec {
+                                    command,
+                                    interval_ms,
+                                } => UnitHealthCheck::Exec {
+                                    command: command.join(" "),
+                                    interval_ms: *interval_ms,
+                                },
+                            }),
+                            description: svc.description.clone(),
+                            port: svc.port,
+                            autostart: svc.autostart,
+                        }
+                    })
+                    .collect()
+            }
+            LoadedConfig::V2(config) => config.to_units(),
+        }
+    }
+
+    /// Convert to edges
+    pub fn to_edges(&self) -> Vec<UnitEdge> {
+        match self {
+            LoadedConfig::V1(config) => config
+                .services
+                .iter()
+                .flat_map(|(id, svc)| {
+                    svc.depends_on.iter().map(move |dep| UnitEdge {
+                        from: id.clone(),
+                        to: dep.clone(),
+                        kind: UnitEdgeKind::DependsOn,
+                    })
+                })
+                .collect(),
+            LoadedConfig::V2(config) => config.to_edges(),
+        }
+    }
+
+    /// Get project name
+    pub fn project_name(&self) -> Option<&str> {
+        match self {
+            LoadedConfig::V1(config) => config.name.as_deref(),
+            LoadedConfig::V2(config) => config.project_name(),
+        }
     }
 }
 

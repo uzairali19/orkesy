@@ -21,3 +21,5 @@ Thumbs.db
 
 # Debug files
 *.log
+
+/docs

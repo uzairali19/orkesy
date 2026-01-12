@@ -1,16 +1,16 @@
 #![cfg(feature = "docker")]
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
+use bollard::Docker;
 use bollard::container::{
     Config, CreateContainerOptions, LogsOptions, RemoveContainerOptions, StartContainerOptions,
     StopContainerOptions,
 };
-use bollard::Docker;
 use futures_util::StreamExt;
 use tokio::sync::{broadcast, mpsc};
 
@@ -100,7 +100,13 @@ impl DockerEngine {
             .collect();
 
         let container_config = Config {
-            image: Some(config.command.first().map(|s| s.as_str()).unwrap_or("busybox")),
+            image: Some(
+                config
+                    .command
+                    .first()
+                    .map(|s| s.as_str())
+                    .unwrap_or("busybox"),
+            ),
             cmd: if cmd.len() > 1 {
                 Some(cmd[1..].to_vec())
             } else {
@@ -112,8 +118,8 @@ impl DockerEngine {
 
         // Create container
         let create_options = CreateContainerOptions {
-            name: &container_name,
-            ..Default::default()
+            name: container_name.clone(),
+            platform: None,
         };
 
         let response = client
@@ -324,28 +330,26 @@ impl Engine for DockerEngine {
                     }
                 }
 
-                EngineCommand::Stop { id } => {
-                    match self.stop_container(&id).await {
-                        Ok(()) => {
-                            self.emit(
-                                &event_tx,
-                                RuntimeEvent::StatusChanged {
-                                    id,
-                                    status: ServiceStatus::Stopped,
-                                },
-                            );
-                        }
-                        Err(e) => {
-                            self.emit(
-                                &event_tx,
-                                RuntimeEvent::LogLine {
-                                    id,
-                                    text: format!("[warn] {}", e),
-                                },
-                            );
-                        }
+                EngineCommand::Stop { id } => match self.stop_container(&id).await {
+                    Ok(()) => {
+                        self.emit(
+                            &event_tx,
+                            RuntimeEvent::StatusChanged {
+                                id,
+                                status: ServiceStatus::Stopped,
+                            },
+                        );
                     }
-                }
+                    Err(e) => {
+                        self.emit(
+                            &event_tx,
+                            RuntimeEvent::LogLine {
+                                id,
+                                text: format!("[warn] {}", e),
+                            },
+                        );
+                    }
+                },
 
                 EngineCommand::Restart { id } => {
                     self.emit(

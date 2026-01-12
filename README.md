@@ -1,175 +1,277 @@
-# Orkesy CLI
+<h1 align="center">Orkesy</h1>
 
-A modern, runtime-agnostic terminal UI for managing services, logs, and commands — not just Docker.
+<p align="center">
+  <strong>A modern, runtime-agnostic terminal UI for managing services, logs, and metrics.</strong>
+</p>
 
-Orkesy is an interactive CLI dashboard built in Rust that lets you observe, control, and interact with running services in real time — using a fast, keyboard-first interface inspired by tools like pnpm, htop, and modern AI CLIs.
+<p align="center">
+  <a href="https://github.com/uzairali19/orkesy/actions/workflows/ci.yml"><img src="https://github.com/uzairali19/orkesy/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/uzairali19/orkesy/releases"><img src="https://img.shields.io/github/v/release/uzairali19/orkesy?color=blue" alt="Release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License"></a>
+</p>
 
-⸻
+<p align="center">
+  <a href="https://github.com/uzairali19/orkesy/releases">Releases</a> •
+  <a href="#installation">Install</a> •
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#features">Features</a> •
+  <a href="#configuration">Config</a>
+</p>
 
-# 🚀 What is Orkesy?
+---
 
-Orkesy is not a Docker CLI.
-It’s not tied to Node, Ruby, or any single runtime.
+<!-- Screenshot placeholder - add a demo GIF here -->
+<!-- <p align="center">
+  <img src="assets/demo.gif" width="700" alt="Orkesy demo" />
+</p> -->
 
-Orkesy treats everything as a service:
-	•	A Node.js server
-	•	A Ruby worker
-	•	A Python script
-	•	A background job
-	•	A shell command
-	•	A container (optional)
+## What is Orkesy?
 
-If it can:
-	•	start
-	•	stop
-	•	emit logs
-	•	run commands
+**Orkesy** is an interactive CLI dashboard that lets you observe, control, and interact with running services in real time. Built in Rust with a fast, keyboard-first interface inspired by **htop**, **lazydocker**, and **VS Code**.
 
-# 👉 Orkesy can manage it.
-
-⸻
-
-# 🧠 Why Orkesy?
-
-Most CLIs:
-	•	are runtime-specific
-	•	hide context
-	•	force you to remember flags
-	•	don’t scale well as projects grow
-
-Orkesy gives you:
-	•	live visibility
-	•	interactive control
-	•	one consistent UI
-	•	zero mouse usage
-
-All from your terminal.
-
-⸻
-
-✨ Features
-	•	⚡ Real-time log streaming
-	•	⏸️ Pause & inspect logs without stopping ingestion
-	•	🧭 Keyboard-first service navigation
-	•	/ Command palette with autocomplete
-	•	📊 ASCII dependency graph view
-	•	🧠 Reducer-based state model
-	•	🔌 Pluggable engine architecture
-	•	🧪 Fake engine for fast development
-	•	🛠 Designed for future runtimes (Node, Ruby, shell, Docker, remote)
-
-⸻
-
-# 🖥️ Interface Overview
-
-Services Pane
-	•	Lists all services
-	•	Shows live status (starting, running, stopped)
-	•	Arrow-key navigation
-
-Right Pane
-	•	Live logs (scrollable, pausable)
-	•	Graph view for dependencies
-	•	Designed to become interactive (selection, actions, drill-down)
-
-Footer
-	•	Minimal, always-visible key hints
-	•	No overflow, no clutter
-
-Command Palette
-	•	Open with /
-	•	Autocomplete commands
-	•	History navigation
-	•	Run commands on one service or all services
-
-⸻
-
-# ⌨️ Keyboard Controls
-
-Key	Action
-↑ / ↓	Select service
-Space	Pause / resume logs
-r	Restart
-s	Stop
-t	Start
-Enter	Toggle
-x	Kill
-g	Toggle graph
-/	Command palette
-q	Quit
+It's **runtime-agnostic** - if it can start, stop, and emit logs, Orkesy can manage it:
 
 
-⸻
-
-# 🧩 Architecture
-
-Orkesy cleanly separates UI, state, and execution.
-
-UI (TUI)
-  ↓
-Reducer / State
-  ↓
-Engine (pluggable)
-
-This means:
-	•	The UI doesn’t care how a service runs
-	•	Engines can be swapped without touching the UI
-	•	Future integrations are first-class citizens
-
-⸻
-
-🔮 What This Can Become
-	•	Universal dev service manager
-	•	Local process supervisor
-	•	Runtime-agnostic dashboard
-	•	AI-augmented ops CLI
-	•	Foundation for platform tooling
-
-Orkesy is intentionally small, composable, and extensible.
-
-⸻
-
-🛠 Built With
-	•	Rust
-	•	Tokio
-	•	ratatui
-	•	crossterm
-
-⸻
-
-# 🚀 Getting Started
-
-git clone https://github.com/your-username/orkesy-cli.git
-cd orkesy-cli
-cargo run
+- Node.js servers
+- Rust APIs
+- Python workers
+- Docker containers
+- Background jobs
+- Shell commands
 
 
-⸻
+---
 
-# 👤 Author
+## Features
 
-Uzair Ali
-	•	GitHub: @uzairali19￼
-	•	Twitter: @Uzairali751￼
-	•	LinkedIn: Uzair Ali￼
+| Set | Description |
+|---|---|
+| ⚡ **Real-time logs** | Stream, pause, scroll, search, filter |
+| 📊 **Live metrics** | CPU, memory, network, log rate charts |
+| ⌨️ **Command palette** | Fuzzy search with `/` (VS Code style) |
+| 🔄 **Lifecycle control** | Start, stop, restart, kill services |
+| ❤️ **Health checks** | HTTP, TCP, and exec-based probes |
+| 🧩 **Dependency graph** | Visualize service relationships |
+| 🔍 **Auto-detection** | Node, Rust, Docker Compose, Make, Just |
 
-⸻
+**TUI:** Adaptive layout • Panel focus model • VS Code dark theme • Keyboard-first
 
-# 🤝 Contributing
+---
 
-Ideas, issues, and contributions are welcome.
-This project is intentionally open-ended — experimentation encouraged.
+## Installation
 
-⸻
+### Download binary (recommended)
 
-# ⭐ Show Your Support
+```bash
+# macOS (Apple Silicon)
+curl -LO https://github.com/uzairali19/orkesy/releases/latest/download/orkesy-aarch64-apple-darwin.tar.gz
+tar -xzf orkesy-aarch64-apple-darwin.tar.gz
+chmod +x orkesy && sudo mv orkesy /usr/local/bin/
 
-If this project resonates with you, give it a ⭐️
-It helps more than you think.
+# macOS (Intel)
+curl -LO https://github.com/uzairali19/orkesy/releases/latest/download/orkesy-x86_64-apple-darwin.tar.gz
 
-⸻
+# Linux (x64)
+curl -LO https://github.com/uzairali19/orkesy/releases/latest/download/orkesy-x86_64-unknown-linux-gnu.tar.gz
 
-# 📝 License
+# Windows — download .zip from Releases and extract
+```
 
-MIT License
+**[All releases →](https://github.com/uzairali19/orkesy/releases)**
 
+### Build from source
+
+```bash
+git clone https://github.com/uzairali19/orkesy.git && cd orkesy
+cargo build --release
+./target/release/orkesy --version
+```
+
+---
+
+## Quick Start
+
+```bash
+orkesy init          # Detect project, generate orkesy.yml
+orkesy               # Launch TUI
+orkesy doctor        # Check setup
+orkesy --engine fake # Demo mode (no config needed)
+```
+
+---
+
+## Configuration
+
+Create `orkesy.yml` in your project root:
+
+```yaml
+project: my-app
+
+units:
+  api:
+    kind: process
+    start: npm run dev
+    port: 3000
+    health:
+      http:
+        path: /health
+        interval_ms: 5000
+
+  worker:
+    kind: process
+    start: node worker.js
+    depends_on: [api]
+
+  db:
+    kind: docker
+    start: docker compose up -d postgres
+    port: 5432
+```
+
+> **Tip:** `orkesy init` will auto-generate this for most projects.
+
+---
+
+## Keyboard Controls
+
+### Global
+
+| Key | Action |
+|-----|--------|
+| `Tab` | Cycle focus |
+| `/` | Command palette |
+| `?` | Help |
+| `q` | Quit |
+
+### Units Panel
+
+| Key | Action |
+|-----|--------|
+| `↑↓` | Navigate |
+| `r` | Restart |
+| `s` | Stop |
+| `t` | Start |
+| `x` | Kill |
+| `c` | Clear logs |
+
+### Logs
+
+| Key | Action |
+|-----|--------|
+| `Space` | Pause/resume |
+| `f` | Follow mode |
+| `s` | Search |
+| `n/N` | Next/prev match |
+
+### Views
+
+| Key | View |
+|-----|------|
+| `l` | Logs |
+| `i` | Inspect |
+| `d` | Dependencies |
+| `m` | Metrics |
+
+---
+
+## Architecture
+
+```
+orkesy/
+├── orkesy-core/             # Library crate
+│   ├── model.rs             # Service graph, status types
+│   ├── state.rs             # Runtime state, log storage
+│   ├── reducer.rs           # Event → state mutations
+│   ├── config.rs            # YAML config parsing
+│   ├── metrics.rs           # Time-series ring buffers
+│   ├── command.rs           # Command registry, palette model
+│   ├── unit.rs              # Unit definition, metrics
+│   ├── adapter.rs           # Adapter traits
+│   ├── engine.rs            # Engine traits
+│   ├── job.rs               # Job execution model
+│   ├── plugin.rs            # Plugin system
+│   └── log_filter.rs        # Log level detection
+│
+└── orkesy-cli/              # Binary crate
+    ├── main.rs              # TUI event loop, rendering
+    ├── sampler.rs           # Background metrics collection
+    ├── health.rs            # Health check execution
+    ├── runner.rs            # Command runner
+    ├── engines/
+    │   ├── local_process.rs # Local process engine
+    │   ├── docker.rs        # Docker engine
+    │   └── fake.rs          # Fake engine (testing/demo)
+    ├── adapters/
+    │   ├── process.rs       # Process management
+    │   └── docker.rs        # Docker container management
+    ├── detectors/
+    │   ├── node.rs          # Node.js detection
+    │   ├── rust.rs          # Rust detection
+    │   └── docker.rs        # Docker Compose detection
+    ├── commands/
+    │   ├── init.rs          # orkesy init
+    │   └── doctor.rs        # orkesy doctor
+    └── ui/
+        └── theme.rs         # Color palette, styles
+```
+
+**Event flow:** `Input → Event → Reducer → State → Render`
+
+---
+
+## Platforms
+
+| Platform | Target | Archive |
+|----------|--------|---------|
+| Linux x64 | `x86_64-unknown-linux-gnu` | `.tar.gz` |
+| Linux ARM64 | `aarch64-unknown-linux-gnu` | `.tar.gz` |
+| macOS Intel | `x86_64-apple-darwin` | `.tar.gz` |
+| macOS Apple Silicon | `aarch64-apple-darwin` | `.tar.gz` |
+| Windows x64 | `x86_64-pc-windows-msvc` | `.zip` |
+
+---
+
+## Built With
+
+- [Rust](https://www.rust-lang.org/) — Systems programming
+- [Tokio](https://tokio.rs/) — Async runtime
+- [ratatui](https://ratatui.rs/) — Terminal UI framework
+- [crossterm](https://github.com/crossterm-rs/crossterm) — Cross-platform terminal
+- [sysinfo](https://github.com/GuillaumeGomez/sysinfo) — System metrics
+
+---
+
+## Roadmap
+
+- [ ] Remote services (SSH, Kubernetes)
+- [ ] Persistent metrics history
+- [ ] Custom keybindings
+- [ ] Theme customization
+- [ ] Plugin system
+- [ ] Notifications & alerts
+
+See [docs/INIT_ROADMAP.md](docs/INIT_ROADMAP.md) for `orkesy init` improvements.
+
+---
+
+## Contributing
+
+Contributions welcome! Please open an issue first to discuss changes.
+
+```bash
+cargo test              # Run tests
+cargo clippy            # Lint
+cargo fmt               # Format
+```
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE)
+
+---
+
+<p align="center">
+  Made by <a href="https://github.com/uzairali19">Uzair Ali</a>
+</p>

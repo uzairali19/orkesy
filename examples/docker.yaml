@@ -1,0 +1,53 @@
+# Docker-based services example
+# Requires: docker feature enabled (cargo run -p orkesy-cli --features docker)
+version: 1
+
+project:
+  name: docker-stack
+
+units:
+  postgres:
+    name: "PostgreSQL"
+    kind: docker
+    start: "docker run --rm --name orkesy-postgres -e POSTGRES_PASSWORD=devpass -p 5432:5432 postgres:16-alpine"
+    stop: "docker stop orkesy-postgres"
+    logs: "docker logs -f orkesy-postgres"
+    port: 5432
+    health:
+      type: tcp
+      port: 5432
+      interval_ms: 5000
+    autostart: true
+    description: "PostgreSQL database"
+
+  redis:
+    name: "Redis"
+    kind: docker
+    start: "docker run --rm --name orkesy-redis -p 6379:6379 redis:7-alpine"
+    stop: "docker stop orkesy-redis"
+    logs: "docker logs -f orkesy-redis"
+    port: 6379
+    health:
+      type: tcp
+      port: 6379
+      interval_ms: 3000
+    autostart: true
+    description: "Redis cache"
+
+  app:
+    name: "App Server"
+    kind: process
+    start: "echo 'App would start here connecting to postgres:5432 and redis:6379'; sleep infinity"
+    env:
+      DATABASE_URL: "postgres://localhost:5432/myapp"
+      REDIS_URL: "redis://localhost:6379"
+    autostart: false
+    description: "Main application"
+
+edges:
+  - from: app
+    to: postgres
+    kind: depends_on
+  - from: app
+    to: redis
+    kind: depends_on

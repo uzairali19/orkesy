@@ -7,6 +7,7 @@ use tokio::sync::{broadcast, mpsc};
 use orkesy_core::engine::{Engine, EngineCommand};
 use orkesy_core::model::{RuntimeGraph, ServiceId, ServiceStatus};
 use orkesy_core::reducer::{EventEnvelope, RuntimeEvent};
+use orkesy_core::state::LogStream;
 
 /// A fake engine that simulates service lifecycle for demos and testing.
 ///
@@ -26,6 +27,7 @@ impl FakeEngine {
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_tick_interval(mut self, interval: Duration) -> Self {
         self.tick_interval = interval;
         self
@@ -70,7 +72,9 @@ impl Engine for FakeEngine {
             .collect();
 
         // Boot: topology loaded
-        emit(RuntimeEvent::TopologyLoaded { graph: graph.clone() });
+        emit(RuntimeEvent::TopologyLoaded {
+            graph: graph.clone(),
+        });
 
         // Auto-start services marked with autostart
         for (id, node) in &graph.nodes {
@@ -106,6 +110,7 @@ impl Engine for FakeEngine {
                     at: SystemTime::now(),
                     event: RuntimeEvent::LogLine {
                         id: id.clone(),
+                        stream: LogStream::System,
                         text: format!("{} started", id),
                     },
                 });
@@ -134,6 +139,7 @@ impl Engine for FakeEngine {
                                 at: SystemTime::now(),
                                 event: RuntimeEvent::LogLine {
                                     id: id.clone(),
+                                    stream: LogStream::Stdout,
                                     text: text.into(),
                                 },
                             });
@@ -217,6 +223,7 @@ impl Engine for FakeEngine {
                                 at: SystemTime::now(),
                                 event: RuntimeEvent::LogLine {
                                     id,
+                                    stream: LogStream::System,
                                     text: "restarted".into(),
                                 },
                             });
@@ -240,6 +247,7 @@ impl Engine for FakeEngine {
                                 at: SystemTime::now(),
                                 event: RuntimeEvent::LogLine {
                                     id,
+                                    stream: LogStream::System,
                                     text: "process killed".into(),
                                 },
                             });
@@ -307,6 +315,7 @@ impl Engine for FakeEngine {
                                 at: SystemTime::now(),
                                 event: RuntimeEvent::LogLine {
                                     id: id.clone(),
+                                    stream: LogStream::System,
                                     text: format!("$ {shown}"),
                                 },
                             });
@@ -319,6 +328,7 @@ impl Engine for FakeEngine {
                                 at: SystemTime::now(),
                                 event: RuntimeEvent::LogLine {
                                     id,
+                                    stream: LogStream::System,
                                     text: "ok".into(),
                                 },
                             });
@@ -329,7 +339,7 @@ impl Engine for FakeEngine {
                             let _ = event_tx.send(EventEnvelope {
                                 id: next_id,
                                 at: SystemTime::now(),
-                                event: RuntimeEvent::LogLine { id, text },
+                                event: RuntimeEvent::LogLine { id, stream: LogStream::System, text },
                             });
                             next_id += 1;
                         }

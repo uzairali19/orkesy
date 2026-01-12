@@ -1,0 +1,21 @@
+# Simple example - just echo commands for testing
+version: 1
+
+units:
+  ticker:
+    name: "Ticker"
+    start: "while true; do echo tick $(date); sleep 2; done"
+    autostart: true
+    description: "Prints tick every 2 seconds"
+
+  counter:
+    name: "Counter"
+    start: "i=0; while true; do echo count=$i; i=$((i+1)); sleep 1; done"
+    autostart: true
+    description: "Counts up every second"
+
+  oneshot:
+    name: "One Shot"
+    start: "echo 'Hello from oneshot!'; sleep 5; echo 'Goodbye!'"
+    autostart: false
+    description: "Runs once and exits"

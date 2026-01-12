@@ -1,33 +1,25 @@
-use std::collections::{ BTreeMap, BTreeSet };
+use std::collections::{BTreeMap, BTreeSet};
 
 pub type ServiceId = String;
 pub type InstanceId = String;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ServiceStatus {
     Unknown,
     Starting,
     Running,
     Stopped,
-    Exited {
-        code: Option<i32>,
-    },
+    Exited { code: Option<i32> },
     Restarting,
-    Errored {
-        message: String,
-    },
+    Errored { message: String },
 }
 
 #[derive(Clone, Debug)]
 pub enum HealthStatus {
     Unknown,
     Healthy,
-    Degraded {
-        reason: String,
-    },
-    Unhealthy {
-        reason: String,
-    },
+    Degraded { reason: String },
+    Unhealthy { reason: String },
 }
 
 #[derive(Clone, Debug)]
