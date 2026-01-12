@@ -1,14 +1,5 @@
-//! Plugin System Architecture
-//!
-//! Provides an extensible system for:
-//! - Runtime adapters (process, docker, k8s)
-//! - Command detection per ecosystem (node, python, rust, go)
-//! - Custom plugins adding units, commands, health checks, metrics
-//!
-//! Built-in plugins are compiled into the binary; dynamic loading can be added later.
-
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::command::{
     CommandCategory, CommandRegistry, CommandSource, CommandSpec, DetectedTool, PackageManager,
@@ -17,23 +8,14 @@ use crate::command::{
 use crate::model::RuntimeGraph;
 use crate::unit::Unit;
 
-// ============================================================================
-// Plugin Trait
-// ============================================================================
-
-/// Context provided to plugins during detection
 #[derive(Clone, Debug)]
 pub struct DetectContext {
-    /// Repository/project root directory
     pub repo_root: PathBuf,
-    /// Known configuration files found
     pub known_files: Vec<PathBuf>,
-    /// Environment information
     pub env_info: EnvironmentInfo,
 }
 
 impl DetectContext {
-    /// Create a new detection context
     pub fn new(repo_root: PathBuf) -> Self {
         Self {
             repo_root,
@@ -42,57 +24,41 @@ impl DetectContext {
         }
     }
 
-    /// Check if a file exists relative to repo root
     pub fn has_file(&self, name: &str) -> bool {
         self.repo_root.join(name).exists()
     }
 
-    /// Check if any of the given files exist
     pub fn has_any_file(&self, names: &[&str]) -> bool {
         names.iter().any(|n| self.has_file(n))
     }
 
-    /// Get the path to a file relative to repo root
     pub fn file_path(&self, name: &str) -> PathBuf {
         self.repo_root.join(name)
     }
 }
 
-/// Environment information (from doctor checks)
 #[derive(Clone, Debug, Default)]
 pub struct EnvironmentInfo {
-    /// Available executables on PATH
     pub available_commands: Vec<String>,
-    /// Docker available
     pub has_docker: bool,
-    /// Node.js version if available
     pub node_version: Option<String>,
-    /// Python version if available
     pub python_version: Option<String>,
-    /// Rust/Cargo version if available
     pub rust_version: Option<String>,
 }
 
-/// Result of plugin detection
 #[derive(Clone, Debug, Default)]
 pub struct DetectResult {
-    /// Confidence score (0.0 to 1.0) that this plugin applies
     pub confidence: f32,
-    /// Summary strings for UI display
     pub summary: Vec<String>,
-    /// Suggested units to create
     pub suggested_units: Vec<Unit>,
-    /// Suggested commands to register
     pub suggested_commands: Vec<CommandSpec>,
 }
 
 impl DetectResult {
-    /// Create an empty result (plugin doesn't apply)
     pub fn none() -> Self {
         Self::default()
     }
 
-    /// Create a result with a given confidence
     pub fn with_confidence(confidence: f32) -> Self {
         Self {
             confidence,
@@ -100,43 +66,29 @@ impl DetectResult {
         }
     }
 
-    /// Add a summary line
     pub fn add_summary(&mut self, s: impl Into<String>) {
         self.summary.push(s.into());
     }
 
-    /// Add a suggested command
     pub fn add_command(&mut self, cmd: CommandSpec) {
         self.suggested_commands.push(cmd);
     }
 
-    /// Add a suggested unit
     pub fn add_unit(&mut self, unit: Unit) {
         self.suggested_units.push(unit);
     }
 }
 
-/// Context provided during contribution phase
 #[derive(Clone, Debug)]
 pub struct PluginContext {
-    /// Repository root
     pub repo_root: PathBuf,
-    /// Plugin ID
     pub plugin_id: String,
 }
 
-/// The main plugin trait
 pub trait OrkesyPlugin: Send + Sync {
-    /// Unique identifier for this plugin
     fn id(&self) -> &'static str;
-
-    /// Display name for the plugin
     fn name(&self) -> &'static str;
-
-    /// Lightweight detection - runs fast, returns confidence
     fn detect(&self, ctx: &DetectContext) -> DetectResult;
-
-    /// Contribute commands and units to the registry
     fn contribute(
         &self,
         ctx: &PluginContext,
@@ -145,11 +97,6 @@ pub trait OrkesyPlugin: Send + Sync {
     );
 }
 
-// ============================================================================
-// Built-in Plugins
-// ============================================================================
-
-/// Node.js plugin - reads package.json scripts
 pub struct NodePlugin;
 
 impl OrkesyPlugin for NodePlugin {
@@ -168,7 +115,6 @@ impl OrkesyPlugin for NodePlugin {
 
         let mut result = DetectResult::with_confidence(0.9);
 
-        // Determine package manager
         let pm = if ctx.has_file("pnpm-lock.yaml") {
             PackageManager::Pnpm
         } else if ctx.has_file("yarn.lock") {
@@ -181,28 +127,26 @@ impl OrkesyPlugin for NodePlugin {
 
         result.add_summary(format!("Found package.json ({})", pm.run_prefix()));
 
-        // Try to read package.json and extract scripts
-        if let Ok(content) = std::fs::read_to_string(ctx.file_path("package.json")) {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                if let Some(scripts) = json.get("scripts").and_then(|s| s.as_object()) {
-                    let script_count = scripts.len();
-                    for (name, _cmd) in scripts {
-                        let category = categorize_npm_script(name);
-                        let cmd = CommandSpec {
-                            id: format!("node:{}", name),
-                            tool: DetectedTool::Node { pm: pm.clone() },
-                            name: name.to_string(),
-                            display_name: format!("{} {}", pm.run_prefix(), name),
-                            command: format!("{} {}", pm.run_prefix(), name),
-                            cwd: None,
-                            description: None,
-                            category,
-                        };
-                        result.add_command(cmd);
-                    }
-                    result.add_summary(format!("Found {} npm scripts", script_count));
-                }
+        if let Ok(content) = std::fs::read_to_string(ctx.file_path("package.json"))
+            && let Ok(json) = serde_json::from_str::<serde_json::Value>(&content)
+            && let Some(scripts) = json.get("scripts").and_then(|s| s.as_object())
+        {
+            let script_count = scripts.len();
+            for (name, _cmd) in scripts {
+                let category = categorize_npm_script(name);
+                let cmd = CommandSpec {
+                    id: format!("node:{}", name),
+                    tool: DetectedTool::Node { pm: pm.clone() },
+                    name: name.to_string(),
+                    display_name: format!("{} {}", pm.run_prefix(), name),
+                    command: format!("{} {}", pm.run_prefix(), name),
+                    cwd: None,
+                    description: None,
+                    category,
+                };
+                result.add_command(cmd);
             }
+            result.add_summary(format!("Found {} npm scripts", script_count));
         }
 
         result
@@ -214,7 +158,6 @@ impl OrkesyPlugin for NodePlugin {
         registry: &mut CommandRegistry,
         _graph: &mut RuntimeGraph,
     ) {
-        // Re-run detection and add commands
         let detect_ctx = DetectContext::new(ctx.repo_root.clone());
         let result = self.detect(&detect_ctx);
 
@@ -227,7 +170,6 @@ impl OrkesyPlugin for NodePlugin {
     }
 }
 
-/// Categorize an npm script by name
 fn categorize_npm_script(name: &str) -> CommandCategory {
     let name_lower = name.to_lowercase();
     if name_lower.contains("dev") || name_lower.contains("start") || name_lower.contains("serve") {
@@ -246,7 +188,6 @@ fn categorize_npm_script(name: &str) -> CommandCategory {
     }
 }
 
-/// Rust/Cargo plugin
 pub struct RustPlugin;
 
 impl OrkesyPlugin for RustPlugin {
@@ -266,7 +207,6 @@ impl OrkesyPlugin for RustPlugin {
         let mut result = DetectResult::with_confidence(0.9);
         result.add_summary("Found Cargo.toml");
 
-        // Add standard cargo commands
         let commands = [
             ("build", "cargo build", CommandCategory::Build),
             (
@@ -315,7 +255,6 @@ impl OrkesyPlugin for RustPlugin {
     }
 }
 
-/// Python plugin - reads pyproject.toml
 pub struct PythonPlugin;
 
 impl OrkesyPlugin for PythonPlugin {
@@ -338,11 +277,9 @@ impl OrkesyPlugin for PythonPlugin {
 
         let mut result = DetectResult::with_confidence(0.8);
 
-        // Determine package manager
         let pm = if ctx.has_file("uv.lock") {
             PythonPackageManager::Uv
         } else if has_pyproject {
-            // Check for poetry in pyproject.toml
             if let Ok(content) = std::fs::read_to_string(ctx.file_path("pyproject.toml")) {
                 if content.contains("[tool.poetry]") {
                     PythonPackageManager::Poetry
@@ -358,7 +295,6 @@ impl OrkesyPlugin for PythonPlugin {
 
         result.add_summary(format!("Python project detected ({:?})", pm));
 
-        // Add common Python commands based on package manager
         match pm {
             PythonPackageManager::Uv => {
                 result.add_command(create_python_cmd(
@@ -440,7 +376,6 @@ fn create_python_cmd(name: &str, command: &str, category: CommandCategory) -> Co
     }
 }
 
-/// Docker Compose plugin
 pub struct DockerPlugin;
 
 impl OrkesyPlugin for DockerPlugin {
@@ -468,7 +403,6 @@ impl OrkesyPlugin for DockerPlugin {
         let mut result = DetectResult::with_confidence(0.95);
         result.add_summary(format!("Found {}", file));
 
-        // Add standard docker compose commands
         let commands = [
             ("up", "docker compose up", CommandCategory::Dev),
             ("up -d", "docker compose up -d", CommandCategory::Dev),
@@ -515,11 +449,6 @@ impl OrkesyPlugin for DockerPlugin {
     }
 }
 
-// ============================================================================
-// Plugin Manager
-// ============================================================================
-
-/// Manages all registered plugins
 pub struct PluginManager {
     plugins: Vec<Box<dyn OrkesyPlugin>>,
 }
@@ -531,7 +460,6 @@ impl Default for PluginManager {
 }
 
 impl PluginManager {
-    /// Create a new plugin manager with built-in plugins
     pub fn new() -> Self {
         let plugins: Vec<Box<dyn OrkesyPlugin>> = vec![
             Box::new(NodePlugin),
@@ -543,7 +471,6 @@ impl PluginManager {
         Self { plugins }
     }
 
-    /// Run detection across all plugins
     pub fn detect_all(&self, ctx: &DetectContext) -> BTreeMap<String, DetectResult> {
         let mut results = BTreeMap::new();
 
@@ -557,22 +484,20 @@ impl PluginManager {
         results
     }
 
-    /// Contribute all detected plugins to the registry
     pub fn contribute_all(
         &self,
-        repo_root: &PathBuf,
+        repo_root: &Path,
         registry: &mut CommandRegistry,
         graph: &mut RuntimeGraph,
     ) {
-        let detect_ctx = DetectContext::new(repo_root.clone());
+        let detect_ctx = DetectContext::new(repo_root.to_path_buf());
 
         for plugin in &self.plugins {
             let detect_result = plugin.detect(&detect_ctx);
 
-            // Only contribute if plugin detected something
             if detect_result.confidence > 0.0 {
                 let ctx = PluginContext {
-                    repo_root: repo_root.clone(),
+                    repo_root: repo_root.to_path_buf(),
                     plugin_id: plugin.id().to_string(),
                 };
                 plugin.contribute(&ctx, registry, graph);
@@ -580,7 +505,6 @@ impl PluginManager {
         }
     }
 
-    /// Get plugin by ID
     pub fn get(&self, id: &str) -> Option<&dyn OrkesyPlugin> {
         self.plugins
             .iter()
@@ -588,7 +512,6 @@ impl PluginManager {
             .map(|p| p.as_ref())
     }
 
-    /// List all plugin IDs
     pub fn plugin_ids(&self) -> Vec<&'static str> {
         self.plugins.iter().map(|p| p.id()).collect()
     }

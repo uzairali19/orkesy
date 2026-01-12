@@ -85,10 +85,10 @@ pub fn run_init(yes: bool) -> Result<(), String> {
 
 /// Scan the project directory for known frameworks/tools
 fn scan_project(dir: &Path) -> Result<ScanResult, String> {
-    let mut result = ScanResult::default();
-
-    // Try to get project name from various sources
-    result.project_name = detect_project_name(dir);
+    let mut result = ScanResult {
+        project_name: detect_project_name(dir),
+        ..Default::default()
+    };
 
     // Detect Docker Compose
     if let Some(units) = detect_docker_compose(dir) {
@@ -578,7 +578,7 @@ fn detect_go(dir: &Path) -> Option<Vec<DetectedUnit>> {
         .lines()
         .find(|l| l.starts_with("module "))
         .and_then(|l| l.strip_prefix("module "))
-        .map(|s| s.split('/').last().unwrap_or(s).to_string())
+        .map(|s| s.split('/').next_back().unwrap_or(s).to_string())
         .unwrap_or_else(|| "app".to_string());
 
     // Check for main.go

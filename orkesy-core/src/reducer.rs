@@ -388,7 +388,7 @@ mod tests {
         );
         reduce(&mut state, &env);
 
-        assert!(state.logs.per_service.get("api").is_none());
+        assert!(!state.logs.per_service.contains_key("api"));
     }
 
     #[test]

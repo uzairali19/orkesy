@@ -102,17 +102,9 @@ impl Palette {
 
 /// Theme configuration
 #[allow(dead_code)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Theme {
     pub palette: Palette,
-}
-
-impl Default for Theme {
-    fn default() -> Self {
-        Self {
-            palette: Palette::dark(),
-        }
-    }
 }
 
 #[allow(dead_code)]

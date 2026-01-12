@@ -1,24 +1,14 @@
-//! Metrics time-series storage for live graphs
-//!
-//! Provides ring-buffer based storage for metrics data points,
-//! designed for rendering real-time charts in the TUI.
-
 use std::collections::{BTreeMap, VecDeque};
 
 use crate::model::ServiceId;
 
-/// A time-series of (timestamp, value) pairs with fixed capacity.
-/// Oldest points are dropped when capacity is exceeded.
 #[derive(Clone, Debug)]
 pub struct Series {
-    /// Maximum number of points to store
     pub cap: usize,
-    /// Ring buffer of (t_seconds, value) pairs
     pub points: VecDeque<(f64, f64)>,
 }
 
 impl Series {
-    /// Create a new series with given capacity
     pub fn new(cap: usize) -> Self {
         Self {
             cap,
@@ -26,7 +16,6 @@ impl Series {
         }
     }
 
-    /// Push a new data point, dropping oldest if at capacity
     pub fn push(&mut self, t: f64, v: f64) {
         if self.points.len() >= self.cap {
             self.points.pop_front();
@@ -34,17 +23,14 @@ impl Series {
         self.points.push_back((t, v));
     }
 
-    /// Get points as a Vec for Chart rendering
     pub fn as_vec(&self) -> Vec<(f64, f64)> {
         self.points.iter().copied().collect()
     }
 
-    /// Get the most recent value, if any
     pub fn latest(&self) -> Option<f64> {
         self.points.back().map(|(_, v)| *v)
     }
 
-    /// Get min and max timestamps in the series
     pub fn time_bounds(&self) -> Option<(f64, f64)> {
         if self.points.is_empty() {
             return None;
@@ -54,7 +40,6 @@ impl Series {
         Some((min_t, max_t))
     }
 
-    /// Get min and max values in the series
     pub fn value_bounds(&self) -> Option<(f64, f64)> {
         if self.points.is_empty() {
             return None;
@@ -72,17 +57,14 @@ impl Series {
         Some((min_v, max_v))
     }
 
-    /// Clear all points
     pub fn clear(&mut self) {
         self.points.clear();
     }
 
-    /// Check if series is empty
     pub fn is_empty(&self) -> bool {
         self.points.is_empty()
     }
 
-    /// Get number of points
     pub fn len(&self) -> usize {
         self.points.len()
     }
@@ -90,45 +72,28 @@ impl Series {
 
 impl Default for Series {
     fn default() -> Self {
-        // Default: 120 points = 60 seconds at 500ms sampling
         Self::new(120)
     }
 }
 
-/// Aggregated metrics state for the entire runtime.
-/// Stores time-series data for system-level and per-service metrics.
 #[derive(Clone, Debug)]
 pub struct MetricsState {
-    /// System-wide CPU percentage (0-100)
     pub system_cpu: Series,
-    /// System-wide memory usage in MB
     pub system_mem: Series,
-    /// System-wide network throughput in KB/s
     pub system_net: Series,
-
-    /// Per-service CPU percentage
     pub svc_cpu: BTreeMap<ServiceId, Series>,
-    /// Per-service memory in MB
     pub svc_mem: BTreeMap<ServiceId, Series>,
-    /// Per-service network KB/s
     pub svc_net: BTreeMap<ServiceId, Series>,
-
-    /// Per-service log rate (logs/second)
     pub logs_rate: BTreeMap<ServiceId, Series>,
-
-    /// Log counters for computing log rate (used by sampler)
     pub log_counts: BTreeMap<ServiceId, u64>,
-    /// Previous log counts for delta calculation
     pub prev_log_counts: BTreeMap<ServiceId, u64>,
 }
 
 impl MetricsState {
-    /// Create a new MetricsState with default capacity (120 points = 60s window)
     pub fn new() -> Self {
         Self::with_capacity(120)
     }
 
-    /// Create with custom capacity
     pub fn with_capacity(cap: usize) -> Self {
         Self {
             system_cpu: Series::new(cap),
@@ -143,14 +108,12 @@ impl MetricsState {
         }
     }
 
-    /// Push system-level metrics
     pub fn push_system(&mut self, t: f64, cpu_pct: f64, mem_mb: f64, net_kbps: f64) {
         self.system_cpu.push(t, cpu_pct);
         self.system_mem.push(t, mem_mb);
         self.system_net.push(t, net_kbps);
     }
 
-    /// Push per-service metrics
     pub fn push_service(
         &mut self,
         t: f64,
@@ -160,40 +123,27 @@ impl MetricsState {
         net_kbps: Option<f64>,
     ) {
         if let Some(cpu) = cpu_pct {
-            self.svc_cpu
-                .entry(id.clone())
-                .or_insert_with(Series::default)
-                .push(t, cpu);
+            self.svc_cpu.entry(id.clone()).or_default().push(t, cpu);
         }
         if let Some(mem) = mem_mb {
-            self.svc_mem
-                .entry(id.clone())
-                .or_insert_with(Series::default)
-                .push(t, mem);
+            self.svc_mem.entry(id.clone()).or_default().push(t, mem);
         }
         if let Some(net) = net_kbps {
-            self.svc_net
-                .entry(id.clone())
-                .or_insert_with(Series::default)
-                .push(t, net);
+            self.svc_net.entry(id.clone()).or_default().push(t, net);
         }
     }
 
-    /// Push log rate for a service
     pub fn push_log_rate(&mut self, t: f64, id: &ServiceId, logs_per_sec: f64) {
         self.logs_rate
             .entry(id.clone())
-            .or_insert_with(Series::default)
+            .or_default()
             .push(t, logs_per_sec);
     }
 
-    /// Increment log count for a service (called when log line received)
     pub fn increment_log_count(&mut self, id: &ServiceId) {
         *self.log_counts.entry(id.clone()).or_insert(0) += 1;
     }
 
-    /// Compute log rates from count deltas (called by sampler)
-    /// Returns map of service_id -> logs/second
     pub fn compute_log_rates(&mut self, interval_secs: f64) -> BTreeMap<ServiceId, f64> {
         let mut rates = BTreeMap::new();
 
@@ -204,18 +154,14 @@ impl MetricsState {
             rates.insert(id.clone(), rate);
         }
 
-        // Update previous counts
         self.prev_log_counts = self.log_counts.clone();
-
         rates
     }
 
-    /// Clear metrics for a service (when it stops)
     pub fn clear_service(&mut self, id: &ServiceId) {
         self.svc_cpu.remove(id);
         self.svc_mem.remove(id);
         self.svc_net.remove(id);
-        // Keep logs_rate for history, but clear counts
         self.log_counts.remove(id);
         self.prev_log_counts.remove(id);
     }
@@ -301,7 +247,7 @@ mod tests {
 
         assert_eq!(state.svc_cpu.get("api").unwrap().latest(), Some(25.0));
         assert_eq!(state.svc_mem.get("api").unwrap().latest(), Some(512.0));
-        assert!(state.svc_net.get("api").is_none());
+        assert!(!state.svc_net.contains_key("api"));
     }
 
     #[test]
@@ -319,7 +265,7 @@ mod tests {
         state.increment_log_count(&"api".to_string());
 
         let rates = state.compute_log_rates(0.5);
-        assert_eq!(rates.get("api"), Some(&4.0)); // 2 logs / 0.5s = 4/s
+        assert_eq!(rates.get("api"), Some(&4.0));
     }
 
     #[test]

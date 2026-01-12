@@ -327,9 +327,9 @@ fn find_config() -> Option<std::path::PathBuf> {
 }
 
 fn check_config(path: &Path) -> Option<Vec<Check>> {
-    use orkesy_core::config::load_config;
+    use orkesy_core::config::OrkesyConfig;
 
-    let config = load_config(path).ok()?;
+    let config = OrkesyConfig::load(path).ok()?;
     let units = config.to_units();
 
     if units.is_empty() {

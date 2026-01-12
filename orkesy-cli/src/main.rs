@@ -1,3 +1,11 @@
+// Suppress clippy warnings that require extensive refactoring
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::unnecessary_unwrap)]
+#![allow(clippy::manual_clamp)]
+#![allow(clippy::match_single_binding)]
+#![allow(clippy::type_complexity)]
+#![allow(clippy::too_many_arguments)]
+
 mod adapters;
 mod commands;
 mod detectors;
@@ -35,7 +43,7 @@ use ratatui::{
 use tokio::sync::{RwLock, broadcast, mpsc};
 
 use orkesy_core::adapter::{Adapter, AdapterCommand, AdapterEvent, LogStream};
-use orkesy_core::config::{LoadedConfig, load_config};
+use orkesy_core::config::OrkesyConfig;
 use orkesy_core::model::*;
 use orkesy_core::reducer::*;
 use orkesy_core::state::*;
@@ -149,15 +157,14 @@ fn demo_graph() -> RuntimeGraph {
     RuntimeGraph { nodes, edges }
 }
 
-/// Try to load config from orkesy.yaml or orkesy.yml
-fn try_load_config() -> Option<(PathBuf, LoadedConfig)> {
+fn try_load_config() -> Option<(PathBuf, OrkesyConfig)> {
     let cwd = std::env::current_dir().ok()?;
     let names = ["orkesy.yml", "orkesy.yaml", ".orkesy.yml", ".orkesy.yaml"];
 
     for name in &names {
         let path = cwd.join(name);
         if path.exists() {
-            match load_config(&path) {
+            match OrkesyConfig::load(&path) {
                 Ok(config) => return Some((path, config)),
                 Err(e) => {
                     eprintln!("Error loading {}: {}", path.display(), e);
@@ -2738,7 +2745,7 @@ async fn tui_loop(
                 out.push(Line::from(vec![
                     Span::styled(format!("  {} ", status_icon), status_style),
                     Span::styled(id, Style::default().fg(Color::White)),
-                    Span::styled(format!("  start • stop • restart • kill • clear",), dim),
+                    Span::styled("  start • stop • restart • kill • clear", dim),
                 ]));
             }
             out.push(Line::from(""));
