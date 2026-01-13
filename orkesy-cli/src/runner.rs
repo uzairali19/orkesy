@@ -14,14 +14,20 @@ use orkesy_core::state::LogStream;
 #[allow(dead_code)]
 #[derive(Debug)]
 pub enum RunnerCommand {
-    Run { spec: CommandSpec },
+    Run {
+        spec: CommandSpec,
+    },
     RunArbitrary {
         title: String,
         command: String,
         cwd: Option<std::path::PathBuf>,
     },
-    Kill { run_id: RunId },
-    Rerun { run_id: RunId },
+    Kill {
+        run_id: RunId,
+    },
+    Rerun {
+        run_id: RunId,
+    },
     Shutdown,
 }
 
@@ -243,13 +249,8 @@ impl CommandRunner {
             });
         }
 
-        self.processes.insert(
-            run_id.to_string(),
-            ProcessHandle {
-                child,
-                pgid,
-            },
-        );
+        self.processes
+            .insert(run_id.to_string(), ProcessHandle { child, pgid });
 
         Ok(())
     }
