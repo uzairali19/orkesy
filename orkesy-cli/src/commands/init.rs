@@ -1,9 +1,6 @@
-//! `orkesy init` command - scans repo and generates orkesy.yml
-
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Detected unit from scanning the project
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DetectedUnit {
@@ -20,14 +17,12 @@ pub struct DetectedUnit {
     pub depends_on: Vec<String>,
 }
 
-/// Result of scanning a project
 #[derive(Debug, Default)]
 pub struct ScanResult {
     pub project_name: Option<String>,
     pub units: Vec<DetectedUnit>,
 }
 
-/// Run the init command
 pub fn run_init(yes: bool) -> Result<(), String> {
     let cwd =
         std::env::current_dir().map_err(|e| format!("Failed to get current directory: {}", e))?;
@@ -83,7 +78,6 @@ pub fn run_init(yes: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// Scan the project directory for known frameworks/tools
 fn scan_project(dir: &Path) -> Result<ScanResult, String> {
     let mut result = ScanResult {
         project_name: detect_project_name(dir),
@@ -155,7 +149,6 @@ fn detect_project_name(dir: &Path) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// Detect Docker Compose services
 fn detect_docker_compose(dir: &Path) -> Option<Vec<DetectedUnit>> {
     let compose_files = [
         "docker-compose.yml",
@@ -250,7 +243,6 @@ fn infer_docker_service(name: &str) -> (&'static str, Option<u16>) {
     }
 }
 
-/// Detect Node.js projects
 fn detect_node(dir: &Path) -> Option<Vec<DetectedUnit>> {
     let pkg_json = dir.join("package.json");
     if !pkg_json.exists() {
@@ -396,7 +388,6 @@ fn detect_node_type(content: &str) -> &'static str {
     }
 }
 
-/// Detect Python projects
 fn detect_python(dir: &Path) -> Option<Vec<DetectedUnit>> {
     let mut units = Vec::new();
 
@@ -517,7 +508,6 @@ fn parse_python_requirements(content: &str, _dir: &Path) -> Option<DetectedUnit>
     })
 }
 
-/// Detect Rust projects
 fn detect_rust(dir: &Path) -> Option<Vec<DetectedUnit>> {
     let cargo_toml = dir.join("Cargo.toml");
     if !cargo_toml.exists() {
@@ -564,7 +554,6 @@ fn detect_rust(dir: &Path) -> Option<Vec<DetectedUnit>> {
     }])
 }
 
-/// Detect Go projects
 fn detect_go(dir: &Path) -> Option<Vec<DetectedUnit>> {
     let go_mod = dir.join("go.mod");
     if !go_mod.exists() {
@@ -663,7 +652,6 @@ fn extract_toml_package_name(content: &str) -> Option<String> {
     None
 }
 
-/// Generate YAML configuration from scan results
 fn generate_yaml(result: &ScanResult) -> String {
     let mut yaml = String::new();
 

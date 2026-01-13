@@ -1,5 +1,3 @@
-//! CLI commands for orkesy
-
 mod doctor;
 mod init;
 

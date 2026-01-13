@@ -15,26 +15,14 @@ use orkesy_core::model::{RuntimeGraph, ServiceId, ServiceStatus};
 use orkesy_core::reducer::{EventEnvelope, RuntimeEvent};
 use orkesy_core::state::LogStream;
 
-/// Handle to a running process
 struct ProcessHandle {
     child: Child,
-    /// Process group ID for killing the entire tree
     pgid: i32,
 }
 
-/// A production engine that manages real local processes.
-///
-/// Features:
-/// - Spawns processes using tokio::process::Command
-/// - Uses process groups (setsid) for reliable cleanup
-/// - Captures stdout/stderr as log events
-/// - Monitors child process exits
 pub struct LocalProcessEngine {
-    /// Service configurations (command, cwd, env, etc.)
     configs: BTreeMap<ServiceId, ServiceConfig>,
-    /// Running process handles
     processes: BTreeMap<ServiceId, ProcessHandle>,
-    /// Shared event ID counter for log streaming tasks
     next_id: Arc<AtomicU64>,
 }
 

@@ -1,49 +1,25 @@
-//! UI Theme Module - Consistent color palette and style helpers
-//!
-//! Provides a centralized theme system for the Orkesy TUI with:
-//! - Palette tokens (not hard-coded colors)
-//! - StyleKit helpers for common states
-//! - VS Code-esque dark theme defaults
-
 use ratatui::style::{Color, Modifier, Style};
 
 use orkesy_core::model::{HealthStatus, ServiceStatus};
 
-/// Color palette tokens for the theme
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct Palette {
-    /// Main background color
     pub bg: Color,
-    /// Panel/pane background
     pub panel_bg: Color,
-    /// Panel border color
     pub panel_border: Color,
-    /// Primary text color
     pub text: Color,
-    /// Dimmed text (secondary info)
     pub text_dim: Color,
-    /// Muted text (tertiary info, disabled)
     pub text_muted: Color,
-    /// Accent color (highlights, focus)
     pub accent: Color,
-    /// Dimmed accent
     pub accent_dim: Color,
-    /// Success state (running, healthy)
     pub success: Color,
-    /// Warning state (starting, restarting)
     pub warn: Color,
-    /// Error state (failed, errored)
     pub error: Color,
-    /// Info state (informational)
     pub info: Color,
-    /// Selection background
     pub selection_bg: Color,
-    /// Selection foreground
     pub selection_fg: Color,
-    /// Key hint text
     pub key_hint: Color,
-    /// Dimmed key hint
     pub key_hint_dim: Color,
 }
 
@@ -55,7 +31,6 @@ impl Default for Palette {
 
 #[allow(dead_code)]
 impl Palette {
-    /// VS Code-esque dark theme
     pub fn dark() -> Self {
         Self {
             bg: Color::Reset,
@@ -77,7 +52,6 @@ impl Palette {
         }
     }
 
-    /// High contrast theme variant
     pub fn high_contrast() -> Self {
         Self {
             bg: Color::Black,
@@ -100,7 +74,6 @@ impl Palette {
     }
 }
 
-/// Theme configuration
 #[allow(dead_code)]
 #[derive(Clone, Debug, Default)]
 pub struct Theme {
@@ -113,9 +86,6 @@ impl Theme {
         Self { palette }
     }
 
-    // ========== StyleKit Helper Functions ==========
-
-    /// Style for service status
     pub fn status_style(&self, status: &ServiceStatus) -> Style {
         let color = match status {
             ServiceStatus::Running => self.palette.success,
@@ -134,7 +104,6 @@ impl Theme {
         Style::default().fg(color)
     }
 
-    /// Icon for service status
     pub fn status_icon(&self, status: &ServiceStatus) -> &'static str {
         match status {
             ServiceStatus::Running => "●",
@@ -153,7 +122,6 @@ impl Theme {
         }
     }
 
-    /// Style for health status
     pub fn health_style(&self, health: &HealthStatus) -> Style {
         let color = match health {
             HealthStatus::Healthy => self.palette.success,
@@ -164,7 +132,6 @@ impl Theme {
         Style::default().fg(color)
     }
 
-    /// Icon for health status
     pub fn health_icon(&self, health: &HealthStatus) -> &'static str {
         match health {
             HealthStatus::Healthy => "✓",
@@ -174,7 +141,6 @@ impl Theme {
         }
     }
 
-    /// Style for tab/view labels
     pub fn tab_style(&self, active: bool) -> Style {
         if active {
             Style::default()
@@ -185,27 +151,22 @@ impl Theme {
         }
     }
 
-    /// Style for key hints in footer
     pub fn key_hint_style(&self) -> Style {
         Style::default().fg(self.palette.key_hint)
     }
 
-    /// Style for dimmed key hints
     pub fn key_hint_dim_style(&self) -> Style {
         Style::default().fg(self.palette.key_hint_dim)
     }
 
-    /// Style for subtle borders
     pub fn subtle_border_style(&self) -> Style {
         Style::default().fg(self.palette.panel_border)
     }
 
-    /// Style for focused borders
     pub fn focused_border_style(&self) -> Style {
         Style::default().fg(self.palette.accent)
     }
 
-    /// Style for selected items
     pub fn selection_style(&self) -> Style {
         Style::default()
             .bg(self.palette.selection_bg)
@@ -213,61 +174,50 @@ impl Theme {
             .add_modifier(Modifier::BOLD)
     }
 
-    /// Style for primary text
     pub fn text_style(&self) -> Style {
         Style::default().fg(self.palette.text)
     }
 
-    /// Style for dimmed text
     pub fn text_dim_style(&self) -> Style {
         Style::default().fg(self.palette.text_dim)
     }
 
-    /// Style for muted text
     pub fn text_muted_style(&self) -> Style {
         Style::default().fg(self.palette.text_muted)
     }
 
-    /// Style for accent text
     pub fn accent_style(&self) -> Style {
         Style::default().fg(self.palette.accent)
     }
 
-    /// Style for bold accent text
     pub fn accent_bold_style(&self) -> Style {
         Style::default()
             .fg(self.palette.accent)
             .add_modifier(Modifier::BOLD)
     }
 
-    /// Style for success text
     pub fn success_style(&self) -> Style {
         Style::default().fg(self.palette.success)
     }
 
-    /// Style for warning text
     pub fn warn_style(&self) -> Style {
         Style::default().fg(self.palette.warn)
     }
 
-    /// Style for error text
     pub fn error_style(&self) -> Style {
         Style::default().fg(self.palette.error)
     }
 
-    /// Style for info text
     pub fn info_style(&self) -> Style {
         Style::default().fg(self.palette.info)
     }
 
-    /// Style for title text
     pub fn title_style(&self) -> Style {
         Style::default()
             .fg(self.palette.text)
             .add_modifier(Modifier::BOLD)
     }
 
-    /// Style for section headers
     pub fn section_header_style(&self) -> Style {
         Style::default()
             .fg(self.palette.accent)
@@ -275,15 +225,12 @@ impl Theme {
     }
 }
 
-/// Global theme instance - can be made configurable later
 static DEFAULT_THEME: std::sync::OnceLock<Theme> = std::sync::OnceLock::new();
 
-/// Get the default theme
 pub fn theme() -> &'static Theme {
     DEFAULT_THEME.get_or_init(Theme::default)
 }
 
-/// Convenience re-exports for common use cases
 #[allow(dead_code)]
 pub mod styles {
     use super::*;

@@ -19,15 +19,10 @@ use orkesy_core::engine::{Engine, EngineCommand};
 use orkesy_core::model::{RuntimeGraph, ServiceId, ServiceStatus};
 use orkesy_core::reducer::{EventEnvelope, RuntimeEvent};
 
-/// Docker-based engine that manages containers
 pub struct DockerEngine {
-    /// Docker client
     client: Option<Docker>,
-    /// Service configurations
     configs: BTreeMap<ServiceId, ServiceConfig>,
-    /// Map from service ID to container ID
     containers: BTreeMap<ServiceId, String>,
-    /// Event ID counter
     next_id: Arc<AtomicU64>,
 }
 

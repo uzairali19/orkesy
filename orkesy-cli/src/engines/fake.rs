@@ -9,14 +9,7 @@ use orkesy_core::model::{RuntimeGraph, ServiceId, ServiceStatus};
 use orkesy_core::reducer::{EventEnvelope, RuntimeEvent};
 use orkesy_core::state::LogStream;
 
-/// A fake engine that simulates service lifecycle for demos and testing.
-///
-/// This engine:
-/// - Simulates Starting -> Running transitions with delays
-/// - Auto-streams fake log messages for running services
-/// - Responds to all commands but doesn't actually run any processes
 pub struct FakeEngine {
-    /// Interval between auto-generated log messages
     tick_interval: Duration,
 }
 

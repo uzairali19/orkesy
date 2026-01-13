@@ -6,7 +6,6 @@ use crate::metrics::MetricsState;
 use crate::model::{RuntimeGraph, ServiceId};
 use crate::unit::UnitMetrics;
 
-/// Which output stream a log line came from
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LogStream {
     Stdout,
@@ -27,7 +26,6 @@ pub struct LogStore {
     pub cap: usize,
     pub per_service: BTreeMap<ServiceId, VecDeque<LogLine>>,
     pub merged: VecDeque<LogLine>,
-    /// Logs for command runs (Commands + Runs feature)
     pub per_run: BTreeMap<RunId, VecDeque<LogLine>>,
 }
 
@@ -61,7 +59,6 @@ impl LogStore {
         // Note: merged logs are not cleared per-service (would be expensive)
     }
 
-    /// Push a log line for a command run
     pub fn push_run(&mut self, run_id: &RunId, line: LogLine) {
         let q = self.per_run.entry(run_id.clone()).or_default();
         q.push_back(line);
@@ -70,13 +67,11 @@ impl LogStore {
         }
     }
 
-    /// Clear logs for a command run
     pub fn clear_run(&mut self, run_id: &RunId) {
         self.per_run.remove(run_id);
     }
 }
 
-/// Maximum number of command runs to keep in history
 const MAX_RUNS: usize = 200;
 
 #[derive(Debug)]
@@ -85,17 +80,9 @@ pub struct RuntimeState {
     pub logs: LogStore,
     pub metrics: BTreeMap<ServiceId, UnitMetrics>,
     pub last_event_id: u64,
-
-    // Commands + Runs feature
-    /// Indexed project information (detected tools and commands)
     pub project: Option<ProjectIndex>,
-    /// Command runs indexed by run ID
     pub runs: BTreeMap<RunId, CommandRun>,
-    /// Run IDs in order (most recent first)
     pub run_order: Vec<RunId>,
-
-    // Time-series metrics for graphs
-    /// Ring-buffer metrics storage for live charts
     pub metrics_series: MetricsState,
 }
 

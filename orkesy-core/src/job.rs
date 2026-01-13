@@ -171,8 +171,14 @@ impl Job {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum JobEvent {
-    JobQueued { job_id: JobId, spec: JobSpec },
-    JobStarted { job_id: JobId, pid: Option<u32> },
+    JobQueued {
+        job_id: JobId,
+        spec: JobSpec,
+    },
+    JobStarted {
+        job_id: JobId,
+        pid: Option<u32>,
+    },
     JobOutput {
         job_id: JobId,
         stream: LogStream,

@@ -1,8 +1,3 @@
-//! Process adapter for spawning and managing OS processes
-//!
-//! This adapter handles units with `kind: process` by spawning them as
-//! child processes, capturing stdout/stderr, and managing their lifecycle.
-
 use std::collections::BTreeMap;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -18,33 +13,16 @@ use tokio::sync::{RwLock, broadcast, mpsc};
 use orkesy_core::adapter::{Adapter, AdapterCommand, AdapterEvent, LogStream};
 use orkesy_core::unit::{StopBehavior, StopSignal, Unit, UnitId, UnitMetrics, UnitStatus};
 
-/// Handle to a running process
 struct ProcessHandle {
     child: Child,
-    /// Process group ID for killing the entire tree
     pgid: i32,
-    /// When the process was started
     started_at: std::time::Instant,
 }
 
-/// Adapter for managing OS processes
-///
-/// Features:
-/// - Spawns processes using tokio::process::Command
-/// - Parses start command as shell string (runs via sh -c)
-/// - Uses process groups (setsid) for reliable cleanup
-/// - Captures stdout/stderr as log events
-/// - Monitors child process exits
-/// - Supports configurable stop behavior (signals or commands)
-/// - Collects CPU/RAM metrics via sysinfo
 pub struct ProcessAdapter {
-    /// Unit configurations indexed by ID
     units: BTreeMap<UnitId, Unit>,
-    /// Running process handles
     processes: BTreeMap<UnitId, ProcessHandle>,
-    /// Shared event ID counter for log streaming tasks
     next_id: Arc<AtomicU64>,
-    /// System info for metrics collection
     sys: Arc<RwLock<System>>,
 }
 
@@ -58,7 +36,6 @@ impl ProcessAdapter {
         }
     }
 
-    /// Refresh system info and collect metrics for a process
     async fn collect_metrics(&self, pid: u32, uptime_secs: u64) -> UnitMetrics {
         let mut sys = self.sys.write().await;
         sys.refresh_processes(
@@ -113,7 +90,6 @@ impl ProcessAdapter {
         );
     }
 
-    /// Spawn a unit's process
     async fn spawn_unit(
         &mut self,
         id: &UnitId,
@@ -212,7 +188,6 @@ impl ProcessAdapter {
         Ok(())
     }
 
-    /// Stop a unit using its configured stop behavior
     async fn stop_unit(&mut self, id: &UnitId, force: bool) -> Result<(), String> {
         let unit = self.units.get(id);
         let stop_behavior = unit
@@ -287,7 +262,6 @@ impl ProcessAdapter {
         }
     }
 
-    /// Run install commands for a unit
     async fn install_unit(
         &self,
         id: &UnitId,
@@ -370,7 +344,6 @@ impl Default for ProcessAdapter {
     }
 }
 
-/// Format bytes as human-readable (KB, MB, GB)
 pub fn format_bytes(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = KB * 1024;

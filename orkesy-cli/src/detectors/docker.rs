@@ -1,7 +1,3 @@
-//! Docker Compose project detector
-//!
-//! Detects docker-compose.yml and provides compose commands.
-
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
@@ -12,7 +8,6 @@ use super::Detector;
 pub struct DockerComposeDetector;
 
 impl DockerComposeDetector {
-    /// Find the compose file in the project root
     fn find_compose_file(root: &Path) -> Option<PathBuf> {
         let candidates = [
             "docker-compose.yml",

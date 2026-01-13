@@ -1,7 +1,3 @@
-//! Project detection framework
-//!
-//! Detects available tools and commands in a project directory.
-
 mod docker;
 mod node;
 mod rust;
@@ -17,21 +13,16 @@ pub use docker::DockerComposeDetector;
 pub use node::NodeDetector;
 pub use rust::RustDetector;
 
-/// Trait for project detectors
 #[async_trait]
 pub trait Detector: Send + Sync {
-    /// Name of this detector
     #[allow(dead_code)]
     fn name(&self) -> &'static str;
 
-    /// Check if this detector applies to the project
     async fn detect(&self, root: &Path) -> Option<DetectedTool>;
 
-    /// Extract commands from the project
     async fn commands(&self, root: &Path, tool: &DetectedTool) -> Vec<CommandSpec>;
 }
 
-/// Run all detectors and build a ProjectIndex
 pub async fn index_project(root: &Path) -> ProjectIndex {
     let detectors: Vec<Box<dyn Detector>> = vec![
         Box::new(NodeDetector),

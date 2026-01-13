@@ -1,7 +1,3 @@
-//! Rust/Cargo project detector
-//!
-//! Detects Cargo.toml and provides standard cargo commands.
-
 use std::path::Path;
 
 use async_trait::async_trait;

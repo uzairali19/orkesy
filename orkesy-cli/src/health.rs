@@ -9,7 +9,6 @@ use orkesy_core::model::{HealthStatus, ServiceId};
 use orkesy_core::reducer::{EventEnvelope, RuntimeEvent};
 use orkesy_core::unit::{HealthCheck, Unit};
 
-/// A background health checker for a single service
 #[allow(dead_code)]
 pub struct HealthChecker {
     service_id: ServiceId,
@@ -145,7 +144,6 @@ impl HealthChecker {
     }
 }
 
-/// Spawn health checkers for all units that have health checks configured
 pub fn spawn_health_checkers(
     units: &[Unit],
     event_tx: broadcast::Sender<EventEnvelope>,

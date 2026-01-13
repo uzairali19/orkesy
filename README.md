@@ -250,8 +250,6 @@ orkesy/
 - [ ] Plugin system
 - [ ] Notifications & alerts
 
-See [docs/INIT_ROADMAP.md](docs/INIT_ROADMAP.md) for `orkesy init` improvements.
-
 ---
 
 ## Contributing

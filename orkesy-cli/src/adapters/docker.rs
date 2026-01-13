@@ -1,8 +1,3 @@
-//! Docker adapter for managing containers
-//!
-//! This adapter handles units with `kind: docker` by managing Docker containers
-//! through the bollard crate.
-
 #![cfg(feature = "docker")]
 
 use std::collections::BTreeMap;
@@ -22,15 +17,10 @@ use tokio::sync::{broadcast, mpsc};
 use orkesy_core::adapter::{Adapter, AdapterCommand, AdapterEvent, LogStream};
 use orkesy_core::unit::{Unit, UnitId, UnitKind, UnitMetrics, UnitStatus};
 
-/// Adapter for managing Docker containers
 pub struct DockerAdapter {
-    /// Docker client
     client: Option<Docker>,
-    /// Unit configurations indexed by ID
     units: BTreeMap<UnitId, Unit>,
-    /// Map from unit ID to container ID
     containers: BTreeMap<UnitId, String>,
-    /// Event ID counter
     next_id: Arc<AtomicU64>,
 }
 

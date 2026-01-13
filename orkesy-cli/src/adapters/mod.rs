@@ -1,5 +1,3 @@
-//! Adapter implementations for different runtime backends
-
 mod process;
 
 #[cfg(feature = "docker")]

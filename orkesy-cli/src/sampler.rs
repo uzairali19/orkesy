@@ -1,10 +1,3 @@
-//! Metrics Sampler - Background task for collecting system and service metrics
-//!
-//! Runs every 500ms to:
-//! - Collect system CPU/memory/network stats
-//! - Compute log rates per service
-//! - Emit events to the broadcast channel for the reducer
-
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -14,16 +7,13 @@ use tokio::sync::{RwLock, broadcast};
 use orkesy_core::reducer::{EventEnvelope, RuntimeEvent};
 use orkesy_core::state::RuntimeState;
 
-/// Sampling interval (500ms = 2 samples per second)
 const SAMPLE_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Metrics sampler state
 pub struct MetricsSampler {
     system: System,
     networks: Networks,
     start_instant: Instant,
     event_id: u64,
-    /// Previous network bytes for delta calculation
     prev_net_rx: u64,
     prev_net_tx: u64,
 }
@@ -40,19 +30,16 @@ impl MetricsSampler {
         }
     }
 
-    /// Get current timestamp in seconds since start
     fn timestamp(&self) -> f64 {
         self.start_instant.elapsed().as_secs_f64()
     }
 
-    /// Get next event ID
     fn next_event_id(&mut self) -> u64 {
         let id = self.event_id;
         self.event_id += 1;
         id
     }
 
-    /// Sample system metrics and return an event
     fn sample_system(&mut self) -> RuntimeEvent {
         // Refresh system info
         self.system.refresh_cpu_all();
@@ -90,7 +77,6 @@ impl MetricsSampler {
         }
     }
 
-    /// Compute log rates from state and return events
     fn compute_log_rates(
         &self,
         state: &mut orkesy_core::metrics::MetricsState,
@@ -106,7 +92,6 @@ impl MetricsSampler {
             .collect()
     }
 
-    /// Run the sampler loop
     pub async fn run(
         mut self,
         event_tx: broadcast::Sender<EventEnvelope>,
@@ -152,7 +137,6 @@ impl Default for MetricsSampler {
     }
 }
 
-/// Spawn the metrics sampler task
 pub fn spawn_sampler(event_tx: broadcast::Sender<EventEnvelope>, state: Arc<RwLock<RuntimeState>>) {
     let sampler = MetricsSampler::new();
     tokio::spawn(async move {

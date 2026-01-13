@@ -131,8 +131,12 @@ pub enum UnitStatus {
     Running,
     Stopping,
     Stopped,
-    Exited { code: Option<i32> },
-    Errored { message: String },
+    Exited {
+        code: Option<i32>,
+    },
+    Errored {
+        message: String,
+    },
 }
 
 impl UnitStatus {
@@ -150,8 +154,12 @@ pub enum UnitHealth {
     #[default]
     Unknown,
     Healthy,
-    Degraded { reason: String },
-    Unhealthy { reason: String },
+    Degraded {
+        reason: String,
+    },
+    Unhealthy {
+        reason: String,
+    },
 }
 
 #[derive(Clone, Debug, Default)]

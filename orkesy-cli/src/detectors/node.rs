@@ -1,7 +1,3 @@
-//! Node.js project detector
-//!
-//! Detects package.json scripts and determines package manager.
-
 use std::path::Path;
 
 use async_trait::async_trait;
@@ -12,7 +8,6 @@ use super::Detector;
 pub struct NodeDetector;
 
 impl NodeDetector {
-    /// Detect which package manager is used based on lockfiles
     fn detect_package_manager(root: &Path) -> PackageManager {
         if root.join("pnpm-lock.yaml").exists() {
             PackageManager::Pnpm
@@ -25,7 +20,6 @@ impl NodeDetector {
         }
     }
 
-    /// Categorize a script name
     fn categorize_script(name: &str) -> CommandCategory {
         let lower = name.to_lowercase();
         if lower == "dev"

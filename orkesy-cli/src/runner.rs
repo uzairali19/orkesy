@@ -1,10 +1,6 @@
-//! CommandRunner - Actor for executing project commands
-//!
-//! Manages command execution, output streaming, and lifecycle.
-
 use std::collections::BTreeMap;
 use std::process::Stdio;
-use std::time::{Instant, SystemTime};
+use std::time::SystemTime;
 
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
@@ -15,41 +11,28 @@ use orkesy_core::command::{CommandSpec, RunId};
 use orkesy_core::reducer::{EventEnvelope, RuntimeEvent};
 use orkesy_core::state::LogStream;
 
-/// Commands that can be sent to the runner
 #[allow(dead_code)]
 #[derive(Debug)]
 pub enum RunnerCommand {
-    /// Run a command from a spec
     Run { spec: CommandSpec },
-    /// Run an arbitrary command (from palette)
     RunArbitrary {
         title: String,
         command: String,
         cwd: Option<std::path::PathBuf>,
     },
-    /// Kill a running command
     Kill { run_id: RunId },
-    /// Rerun a previous command by run_id
     Rerun { run_id: RunId },
-    /// Shutdown the runner
     Shutdown,
 }
 
-/// Handle to a running process
 struct ProcessHandle {
     child: Child,
     pgid: i32,
-    #[allow(dead_code)]
-    started_at: Instant,
 }
 
-/// Actor that manages command execution
 pub struct CommandRunner {
-    /// Running processes indexed by run ID
     processes: BTreeMap<RunId, ProcessHandle>,
-    /// Command specs for rerun support (indexed by run_id)
     specs: BTreeMap<RunId, CommandSpec>,
-    /// Event ID counter
     next_event_id: u64,
 }
 
@@ -63,7 +46,6 @@ impl CommandRunner {
         }
     }
 
-    /// Main run loop
     pub async fn run(
         &mut self,
         mut command_rx: mpsc::Receiver<RunnerCommand>,
@@ -174,7 +156,6 @@ impl CommandRunner {
         }
     }
 
-    /// Spawn a command and set up output streaming
     async fn spawn_command(
         &mut self,
         spec: &CommandSpec,
@@ -267,14 +248,12 @@ impl CommandRunner {
             ProcessHandle {
                 child,
                 pgid,
-                started_at: Instant::now(),
             },
         );
 
         Ok(())
     }
 
-    /// Emit an error message as command output
     fn emit_error(
         &mut self,
         event_tx: &broadcast::Sender<EventEnvelope>,
@@ -293,7 +272,6 @@ impl CommandRunner {
         self.next_event_id += 1;
     }
 
-    /// Kill a process and its entire process group
     async fn kill_process(mut handle: ProcessHandle) {
         if handle.pgid > 0 {
             #[cfg(unix)]
@@ -318,13 +296,11 @@ impl CommandRunner {
         }
     }
 
-    /// Check if a run is still active
     #[allow(dead_code)]
     pub fn is_running(&self, run_id: &RunId) -> bool {
         self.processes.contains_key(run_id)
     }
 
-    /// Get list of running run IDs
     #[allow(dead_code)]
     pub fn running_ids(&self) -> Vec<RunId> {
         self.processes.keys().cloned().collect()

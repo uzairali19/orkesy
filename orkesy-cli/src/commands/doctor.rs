@@ -1,10 +1,7 @@
-//! `orkesy doctor` command - checks environment health
-
 use std::net::TcpListener;
 use std::path::Path;
 use std::process::Command;
 
-/// Check result
 #[derive(Debug)]
 pub struct Check {
     pub name: String,
@@ -38,7 +35,6 @@ impl Check {
     }
 }
 
-/// Run the doctor command
 pub fn run_doctor() -> Result<(), String> {
     println!("Orkesy Doctor\n");
     println!("Checking environment...\n");

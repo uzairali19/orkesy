@@ -45,14 +45,23 @@ impl std::error::Error for AdapterError {}
 
 #[derive(Clone, Debug)]
 pub enum AdapterEvent {
-    StatusChanged { id: String, status: UnitStatus },
-    HealthChanged { id: String, health: UnitHealth },
+    StatusChanged {
+        id: String,
+        status: UnitStatus,
+    },
+    HealthChanged {
+        id: String,
+        health: UnitHealth,
+    },
     LogLine {
         id: String,
         stream: LogStream,
         text: String,
     },
-    MetricsUpdated { id: String, metrics: UnitMetrics },
+    MetricsUpdated {
+        id: String,
+        metrics: UnitMetrics,
+    },
 }
 
 #[derive(Clone, Debug)]

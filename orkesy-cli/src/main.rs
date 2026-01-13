@@ -53,7 +53,6 @@ use adapters::ProcessAdapter;
 use engines::FakeEngine;
 use ui::styles;
 
-/// Orkesy - Universal Local Runtime & Service Orchestrator
 #[derive(Parser)]
 #[command(name = "orkesy")]
 #[command(about = "Manage and orchestrate local services", long_about = None)]
@@ -64,58 +63,39 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Initialize a new orkesy.yml configuration
     Init {
-        /// Overwrite existing config without prompting
         #[arg(short, long)]
         yes: bool,
     },
-    /// Check environment and configuration health
     Doctor,
-    /// Launch the TUI (default)
     Tui,
-    /// Start one or more units
     Up {
-        /// Unit IDs to start (or "all" for all units)
         #[arg(required = true)]
         units: Vec<String>,
     },
-    /// Stop one or more units
     Down {
-        /// Unit IDs to stop (or "all" for all units)
         #[arg(required = true)]
         units: Vec<String>,
     },
-    /// Restart one or more units
     Restart {
-        /// Unit IDs to restart (or "all" for all units)
         #[arg(required = true)]
         units: Vec<String>,
     },
-    /// Show logs for a unit (streams until Ctrl+C)
     Logs {
-        /// Unit ID to show logs for
         unit: String,
-        /// Follow log output (like tail -f)
         #[arg(short, long, default_value = "true")]
         follow: bool,
     },
-    /// Run install commands for units
     Install {
-        /// Unit IDs to install (or "all" for all units)
         units: Vec<String>,
     },
-    /// Execute a command in a unit's context
     Exec {
-        /// Unit ID
         unit: String,
-        /// Command to execute
         #[arg(last = true, required = true)]
         cmd: Vec<String>,
     },
 }
 
-/// Create a demo graph when no orkesy.yaml is found
 fn demo_graph() -> RuntimeGraph {
     let mut nodes = BTreeMap::new();
 
@@ -176,7 +156,6 @@ fn try_load_config() -> Option<(PathBuf, OrkesyConfig)> {
     None
 }
 
-/// Convert Units to RuntimeGraph for TUI display
 fn units_to_graph(units: &[Unit], edges: &[orkesy_core::unit::UnitEdge]) -> RuntimeGraph {
     let mut nodes = BTreeMap::new();
 
@@ -258,7 +237,6 @@ fn units_to_graph(units: &[Unit], edges: &[orkesy_core::unit::UnitEdge]) -> Runt
     }
 }
 
-/// Convert AdapterEvent to RuntimeEvent for the existing reducer
 fn adapter_event_to_runtime(event: AdapterEvent) -> RuntimeEvent {
     match event {
         AdapterEvent::StatusChanged { id, status } => {
@@ -327,7 +305,6 @@ fn status_label(s: &ServiceStatus) -> &'static str {
     }
 }
 
-/// Get visual icon for service status
 fn status_icon(s: &ServiceStatus) -> &'static str {
     match s {
         ServiceStatus::Unknown => "?",
@@ -341,7 +318,6 @@ fn status_icon(s: &ServiceStatus) -> &'static str {
     }
 }
 
-/// Get visual icon for health status
 fn health_icon(h: &HealthStatus) -> &'static str {
     match h {
         HealthStatus::Unknown => " ",
@@ -351,7 +327,6 @@ fn health_icon(h: &HealthStatus) -> &'static str {
     }
 }
 
-/// Get visual icon for service kind
 fn kind_icon(k: &ServiceKind) -> &'static str {
     match k {
         ServiceKind::HttpApi => "⚡",
@@ -364,7 +339,6 @@ fn kind_icon(k: &ServiceKind) -> &'static str {
     }
 }
 
-/// Get style (color) for service status
 fn status_style(s: &ServiceStatus) -> Style {
     match s {
         ServiceStatus::Running => Style::default().fg(Color::Green),
@@ -377,7 +351,6 @@ fn status_style(s: &ServiceStatus) -> Style {
     }
 }
 
-/// Get style (color) for health status
 fn health_style(h: &HealthStatus) -> Style {
     match h {
         HealthStatus::Healthy => Style::default().fg(Color::Green),
@@ -405,25 +378,6 @@ fn fit_title(s: &str, width: u16) -> String {
     out
 }
 
-#[allow(dead_code)]
-fn fit_line(s: &str, width: u16) -> String {
-    let max = width as usize;
-    if max == 0 {
-        return "".into();
-    }
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() <= max {
-        return s.to_string();
-    }
-    if max <= 1 {
-        return "…".into();
-    }
-    let mut out: String = chars.into_iter().take(max - 1).collect();
-    out.push('…');
-    out
-}
-
-/// Right pane views - switch with l/i/e/d/m keys
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 enum View {
     #[default]
@@ -457,7 +411,6 @@ impl View {
     }
 }
 
-/// Sections within the Inspect view that can receive focus
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 enum InspectSection {
     #[default]
@@ -484,14 +437,13 @@ impl InspectSection {
     }
 }
 
-/// Which pane currently has keyboard focus
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 enum Focus {
     #[default]
-    Units, // Left pane (Units list)
-    RightPane,                    // Right pane (Logs/Deps/Metrics views)
-    InspectPanel(InspectSection), // Inspect view with section focus
-    Palette,                      // Command palette overlay
+    Units,
+    RightPane,
+    InspectPanel(InspectSection),
+    Palette,
 }
 
 #[allow(dead_code)]
@@ -501,26 +453,22 @@ impl Focus {
             Focus::Units => Focus::RightPane,
             Focus::RightPane => Focus::Units,
             Focus::InspectPanel(_) => Focus::Units,
-            Focus::Palette => Focus::Palette, // Palette doesn't toggle
+            Focus::Palette => Focus::Palette,
         }
     }
 
-    /// Check if focus is on right side (any right pane variant)
     fn is_right(&self) -> bool {
         matches!(self, Focus::RightPane | Focus::InspectPanel(_))
     }
 }
 
-// ==================== VS Code Command Picker ====================
-
-/// Category for command picker items
 #[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum PickerCategory {
-    ServiceAction,   // Actions on currently selected service
-    ProjectAction,   // Global actions (start all, stop all)
-    DetectedCommand, // Commands from package.json, Cargo.toml, etc.
-    Navigation,      // View switching
+    ServiceAction,
+    ProjectAction,
+    DetectedCommand,
+    Navigation,
 }
 
 #[allow(dead_code)]
@@ -544,21 +492,14 @@ impl PickerCategory {
     }
 }
 
-/// A single item in the command picker
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
 struct PickerItem {
-    /// Display label (what user sees)
     label: String,
-    /// Optional detail shown in dimmer text
     detail: Option<String>,
-    /// Category for grouping
     category: PickerCategory,
-    /// The command string to execute (for service/project commands)
     command: Option<String>,
-    /// For navigation items: which view to switch to
     target_view: Option<View>,
-    /// Service ID this action applies to (if any)
     service_id: Option<String>,
 }
 
@@ -613,7 +554,6 @@ impl PickerItem {
         }
     }
 
-    /// Simple fuzzy match: check if all chars in pattern appear in order
     fn fuzzy_matches(&self, pattern: &str) -> bool {
         if pattern.is_empty() {
             return true;
@@ -630,7 +570,6 @@ impl PickerItem {
         pattern_chars.peek().is_none()
     }
 
-    /// Score for sorting (higher = better match)
     fn fuzzy_score(&self, pattern: &str) -> i32 {
         if pattern.is_empty() {
             return 0;
@@ -654,7 +593,6 @@ impl PickerItem {
     }
 }
 
-/// Build all picker items for the current context
 fn build_picker_items(
     service_ids: &[String],
     selected_service: Option<&str>,
@@ -767,7 +705,6 @@ fn build_picker_items(
     items
 }
 
-/// Filter and sort picker items by fuzzy query
 fn filter_picker_items(items: &[PickerItem], query: &str) -> Vec<PickerItem> {
     if query.is_empty() {
         // Return all items, grouped by category
@@ -798,13 +735,12 @@ fn filter_picker_items(items: &[PickerItem], query: &str) -> Vec<PickerItem> {
     filtered.into_iter().map(|(item, _)| item).collect()
 }
 
-/// Left pane modes - switch with 1/2/3 keys
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 enum LeftMode {
     #[default]
-    Services, // Existing unit list (key: 1)
-    Commands, // Detected commands (key: 2)
-    Runs,     // Run history (key: 3)
+    Services,
+    Commands,
+    Runs,
 }
 
 impl LeftMode {
@@ -825,22 +761,14 @@ impl LeftMode {
     }
 }
 
-/// Consolidated logs UI state
 #[derive(Clone, Debug, Default)]
 struct LogsUiState {
-    /// Auto-scroll to bottom
     follow: bool,
-    /// Freeze log snapshot
     paused: bool,
-    /// Manual scroll offset (lines from bottom)
     scroll: usize,
-    /// Active search query
     search: Option<String>,
-    /// Matching line indices
     matches: Vec<usize>,
-    /// Current match index
     match_idx: usize,
-    /// Frozen log snapshot when paused
     frozen_logs: Vec<String>,
 }
 
@@ -852,26 +780,22 @@ impl LogsUiState {
         }
     }
 
-    /// Check if in search mode
     fn is_searching(&self) -> bool {
         self.search.is_some()
     }
 
-    /// Enter search mode
     fn enter_search(&mut self) {
         self.search = Some(String::new());
         self.matches.clear();
         self.match_idx = 0;
     }
 
-    /// Exit search mode
     fn exit_search(&mut self) {
         self.search = None;
         self.matches.clear();
         self.match_idx = 0;
     }
 
-    /// Toggle follow mode
     fn toggle_follow(&mut self) {
         self.follow = !self.follow;
         if self.follow {
@@ -879,24 +803,11 @@ impl LogsUiState {
         }
     }
 
-    /// Toggle paused state
-    #[allow(dead_code)]
-    fn toggle_paused(&mut self, current_logs: Vec<String>) {
-        self.paused = !self.paused;
-        if self.paused {
-            self.frozen_logs = current_logs;
-        } else {
-            self.frozen_logs.clear();
-        }
-    }
-
-    /// Scroll up
     fn scroll_up(&mut self, lines: usize) {
         self.follow = false;
         self.scroll = self.scroll.saturating_add(lines);
     }
 
-    /// Scroll down
     fn scroll_down(&mut self, lines: usize) {
         self.scroll = self.scroll.saturating_sub(lines);
         if self.scroll == 0 {
@@ -904,14 +815,12 @@ impl LogsUiState {
         }
     }
 
-    /// Navigate to next search match
     fn next_match(&mut self) {
         if !self.matches.is_empty() {
             self.match_idx = (self.match_idx + 1) % self.matches.len();
         }
     }
 
-    /// Navigate to previous search match
     fn prev_match(&mut self) {
         if !self.matches.is_empty() {
             self.match_idx = if self.match_idx == 0 {
@@ -923,41 +832,25 @@ impl LogsUiState {
     }
 }
 
-/// Unified UI state for the TUI
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
 struct UiState {
-    // Core focus/view
     focus: Focus,
     view: View,
-
-    // Left pane mode (Commands + Runs feature)
     left_mode: LeftMode,
     selected_command: usize,
     selected_run: usize,
-
-    // Logs state (consolidated)
     logs: LogsUiState,
-
-    // Inspect/Deps scroll
     inspect_scroll: usize,
     deps_scroll: usize,
-
-    // Palette overlay
     palette_open: bool,
     palette_input: String,
     palette_error: Option<String>,
     palette_pick: usize,
     palette_scroll: usize,
     palette_sugg_offset: usize,
-
-    // Help overlay
     help_open: bool,
-
-    // Metrics view state
     metrics_paused: bool,
-
-    // Command history
     history: Vec<String>,
     history_cursor: Option<usize>,
 }
@@ -988,29 +881,24 @@ impl Default for UiState {
 }
 
 impl UiState {
-    /// Get current scroll offset for logs (0 = at bottom/follow mode)
     fn scroll_offset(&self) -> usize {
         self.logs.scroll
     }
 
-    /// Check if in follow mode
     fn is_following(&self) -> bool {
         self.logs.follow
     }
 
-    /// Return to follow mode
     fn enter_follow(&mut self) {
         self.logs.follow = true;
         self.logs.scroll = 0;
     }
 
-    /// Get search query if in search mode
     fn search_query(&self) -> Option<&str> {
         self.logs.search.as_deref()
     }
 }
 
-/// Wrapper enum to support both old Engine and new Adapter patterns
 enum RuntimeBackend {
     Adapter {
         cmd_tx: mpsc::Sender<AdapterCommand>,
@@ -1113,7 +1001,6 @@ impl RuntimeBackend {
     }
 }
 
-/// CLI action type for non-TUI commands
 #[derive(Clone, Copy)]
 enum CliAction {
     Start,
@@ -1122,7 +1009,6 @@ enum CliAction {
     Install,
 }
 
-/// Run a CLI command (start/stop/restart/install) without TUI
 async fn run_cli_command(action: CliAction, unit_args: Vec<String>) -> io::Result<()> {
     let Some((path, config)) = try_load_config() else {
         eprintln!("Error: No orkesy.yml found. Run `orkesy init` first.");
@@ -1258,7 +1144,6 @@ async fn run_cli_command(action: CliAction, unit_args: Vec<String>) -> io::Resul
     Ok(())
 }
 
-/// Stream logs for a unit
 async fn run_cli_logs(unit_id: &str, follow: bool) -> io::Result<()> {
     let Some((path, config)) = try_load_config() else {
         eprintln!("Error: No orkesy.yml found. Run `orkesy init` first.");
@@ -1343,7 +1228,6 @@ async fn run_cli_logs(unit_id: &str, follow: bool) -> io::Result<()> {
     Ok(())
 }
 
-/// Execute a command in a unit's context
 async fn run_cli_exec(unit_id: &str, cmd: Vec<String>) -> io::Result<()> {
     let Some((_path, config)) = try_load_config() else {
         eprintln!("Error: No orkesy.yml found. Run `orkesy init` first.");
@@ -1623,9 +1507,6 @@ async fn run_tui() -> io::Result<()> {
     res
 }
 
-// NOTE: Old palette suggestions removed - replaced by VS Code-style command picker
-
-/// Unified command type for TUI operations
 #[derive(Clone, Debug)]
 enum TuiCommand {
     Start { id: String },

@@ -1,4 +1,3 @@
-/// Log level for filtering
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LogLevel {
     Debug,
@@ -18,20 +17,15 @@ impl std::fmt::Display for LogLevel {
     }
 }
 
-/// Filter mode for log viewing
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LogFilterMode {
-    /// Show all log lines
     #[default]
     All,
-    /// Show only warnings and errors
     WarnAndAbove,
-    /// Show only errors
     ErrorOnly,
 }
 
 impl LogFilterMode {
-    /// Cycle to the next filter mode
     pub fn cycle(self) -> Self {
         match self {
             Self::All => Self::WarnAndAbove,
@@ -40,7 +34,6 @@ impl LogFilterMode {
         }
     }
 
-    /// Check if a log level passes this filter
     pub fn matches(&self, level: LogLevel) -> bool {
         match self {
             Self::All => true,
@@ -49,7 +42,6 @@ impl LogFilterMode {
         }
     }
 
-    /// Get display label for the filter mode
     pub fn label(&self) -> &'static str {
         match self {
             Self::All => "ALL",
@@ -59,7 +51,6 @@ impl LogFilterMode {
     }
 }
 
-/// Detect log level from common patterns in log text
 pub fn detect_level(text: &str) -> LogLevel {
     let lower = text.to_lowercase();
 
@@ -99,7 +90,6 @@ pub fn detect_level(text: &str) -> LogLevel {
     LogLevel::Info
 }
 
-/// Grep-style text filter
 #[derive(Clone, Debug, Default)]
 pub struct GrepFilter {
     pub pattern: Option<String>,
@@ -123,7 +113,6 @@ impl GrepFilter {
         self
     }
 
-    /// Check if text matches the filter
     pub fn matches(&self, text: &str) -> bool {
         match &self.pattern {
             None => true,
@@ -133,12 +122,10 @@ impl GrepFilter {
         }
     }
 
-    /// Clear the filter pattern
     pub fn clear(&mut self) {
         self.pattern = None;
     }
 
-    /// Set the filter pattern
     pub fn set(&mut self, pattern: String) {
         self.pattern = if pattern.is_empty() {
             None
@@ -148,7 +135,6 @@ impl GrepFilter {
     }
 }
 
-/// Combined log filter with both level and grep filtering
 #[derive(Clone, Debug, Default)]
 pub struct LogFilter {
     pub level_mode: LogFilterMode,
@@ -160,18 +146,15 @@ impl LogFilter {
         Self::default()
     }
 
-    /// Check if a log line should be shown
     pub fn should_show(&self, text: &str) -> bool {
         let level = detect_level(text);
         self.level_mode.matches(level) && self.grep.matches(text)
     }
 
-    /// Cycle the level filter mode
     pub fn cycle_level(&mut self) {
         self.level_mode = self.level_mode.cycle();
     }
 
-    /// Get combined label for display
     pub fn label(&self) -> String {
         match &self.grep.pattern {
             Some(p) if !p.is_empty() => format!("{} /{}/", self.level_mode.label(), p),

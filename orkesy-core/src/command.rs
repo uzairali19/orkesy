@@ -4,6 +4,8 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
+pub use crate::unit::UnitId;
+
 pub type CommandId = String;
 pub type RunId = String;
 
@@ -220,8 +222,6 @@ impl ProjectIndex {
         cmds
     }
 }
-
-pub type UnitId = String;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LifecycleAction {
