@@ -44,7 +44,7 @@ It's **runtime-agnostic** - if it can start, stop, and emit logs, Orkesy can man
 
 ## Features
 
-| Set | Description |
+| Feature | Description |
 |---|---|
 | ⚡ **Real-time logs** | Stream, pause, scroll, search, filter |
 | 📊 **Live metrics** | CPU, memory, network, log rate charts |

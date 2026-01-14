@@ -10,6 +10,10 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{RwLock, broadcast, mpsc};
 
+#[cfg(unix)]
+#[allow(unused_imports)]
+use std::os::unix::process::CommandExt;
+
 use orkesy_core::adapter::{Adapter, AdapterCommand, AdapterEvent, LogStream};
 use orkesy_core::unit::{StopBehavior, StopSignal, Unit, UnitId, UnitMetrics, UnitStatus};
 
@@ -105,9 +109,19 @@ impl ProcessAdapter {
         }
 
         // Build command - run via shell to support pipes, env vars, etc.
-        let mut cmd = Command::new("sh");
-        cmd.arg("-c");
-        cmd.arg(&unit.start);
+        #[cfg(unix)]
+        let mut cmd = {
+            let mut c = Command::new("sh");
+            c.arg("-c");
+            c.arg(&unit.start);
+            c
+        };
+        #[cfg(windows)]
+        let mut cmd = {
+            let mut c = Command::new("cmd");
+            c.args(["/C", &unit.start]);
+            c
+        };
 
         // Set working directory
         if let Some(cwd) = &unit.cwd {
@@ -119,7 +133,7 @@ impl ProcessAdapter {
             cmd.env(k, v);
         }
 
-        // Create new process group using pre_exec
+        // Create new process group using pre_exec (Unix only)
         // This allows us to kill the entire process tree later
         #[cfg(unix)]
         unsafe {
@@ -197,63 +211,77 @@ impl ProcessAdapter {
         if let Some(mut handle) = self.processes.remove(id) {
             match &stop_behavior {
                 StopBehavior::Signal(sig) if !force => {
-                    let signal = match sig {
-                        StopSignal::SigInt => libc::SIGINT,
-                        StopSignal::SigTerm => libc::SIGTERM,
-                        StopSignal::SigKill => libc::SIGKILL,
-                    };
+                    #[cfg(unix)]
+                    {
+                        let signal = match sig {
+                            StopSignal::SigInt => libc::SIGINT,
+                            StopSignal::SigTerm => libc::SIGTERM,
+                            StopSignal::SigKill => libc::SIGKILL,
+                        };
 
-                    if handle.pgid > 0 {
-                        #[cfg(unix)]
-                        unsafe {
-                            libc::killpg(handle.pgid, signal);
-                        }
+                        if handle.pgid > 0 {
+                            unsafe {
+                                libc::killpg(handle.pgid, signal);
+                            }
 
-                        // Give it time to gracefully shutdown (unless SIGKILL)
-                        if signal != libc::SIGKILL {
-                            tokio::time::sleep(Duration::from_millis(500)).await;
+                            // Give it time to gracefully shutdown (unless SIGKILL)
+                            if signal != libc::SIGKILL {
+                                tokio::time::sleep(Duration::from_millis(500)).await;
 
-                            // Check if still running
-                            if handle.child.try_wait().ok().flatten().is_none() {
-                                #[cfg(unix)]
-                                unsafe {
-                                    libc::killpg(handle.pgid, libc::SIGKILL);
+                                // Check if still running
+                                if handle.child.try_wait().ok().flatten().is_none() {
+                                    unsafe {
+                                        libc::killpg(handle.pgid, libc::SIGKILL);
+                                    }
                                 }
                             }
+                        } else {
+                            let _ = handle.child.kill().await;
                         }
-                    } else {
+                    }
+
+                    #[cfg(windows)]
+                    {
+                        let _ = sig; // Suppress unused warning
                         let _ = handle.child.kill().await;
                     }
                 }
 
                 StopBehavior::Command(cmd) if !force => {
                     // Run the stop command
+                    #[cfg(unix)]
                     let output = Command::new("sh").arg("-c").arg(cmd).output().await;
+                    #[cfg(windows)]
+                    let output = Command::new("cmd").args(["/C", cmd]).output().await;
 
                     if let Err(e) = output {
                         // Fallback to kill
+                        #[cfg(unix)]
                         if handle.pgid > 0 {
-                            #[cfg(unix)]
                             unsafe {
                                 libc::killpg(handle.pgid, libc::SIGKILL);
                             }
                         } else {
                             let _ = handle.child.kill().await;
                         }
+                        #[cfg(windows)]
+                        let _ = handle.child.kill().await;
                         return Err(format!("stop command failed: {}, killed process", e));
                     }
                 }
 
                 _ => {
                     // Force kill
+                    #[cfg(unix)]
                     if handle.pgid > 0 {
-                        #[cfg(unix)]
                         unsafe {
                             libc::killpg(handle.pgid, libc::SIGKILL);
                         }
                     } else {
                         let _ = handle.child.kill().await;
                     }
+                    #[cfg(windows)]
+                    let _ = handle.child.kill().await;
                 }
             }
             Ok(())
@@ -280,8 +308,18 @@ impl ProcessAdapter {
         for cmd in &unit.install {
             self.emit_log(event_tx, id, format!("$ {}", cmd));
 
-            let mut command = Command::new("sh");
-            command.arg("-c").arg(cmd);
+            #[cfg(unix)]
+            let mut command = {
+                let mut c = Command::new("sh");
+                c.arg("-c").arg(cmd);
+                c
+            };
+            #[cfg(windows)]
+            let mut command = {
+                let mut c = Command::new("cmd");
+                c.args(["/C", cmd]);
+                c
+            };
 
             if let Some(cwd) = &unit.cwd {
                 command.current_dir(cwd);

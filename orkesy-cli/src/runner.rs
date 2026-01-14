@@ -7,6 +7,10 @@ use tokio::process::{Child, Command};
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
+#[cfg(unix)]
+#[allow(unused_imports)]
+use std::os::unix::process::CommandExt;
+
 use orkesy_core::command::{CommandSpec, RunId};
 use orkesy_core::reducer::{EventEnvelope, RuntimeEvent};
 use orkesy_core::state::LogStream;
@@ -168,15 +172,25 @@ impl CommandRunner {
         run_id: &str,
         event_tx: &broadcast::Sender<EventEnvelope>,
     ) -> Result<(), String> {
-        let mut cmd = Command::new("sh");
-        cmd.arg("-c");
-        cmd.arg(&spec.command);
+        #[cfg(unix)]
+        let mut cmd = {
+            let mut c = Command::new("sh");
+            c.arg("-c");
+            c.arg(&spec.command);
+            c
+        };
+        #[cfg(windows)]
+        let mut cmd = {
+            let mut c = Command::new("cmd");
+            c.args(["/C", &spec.command]);
+            c
+        };
 
         if let Some(cwd) = &spec.cwd {
             cmd.current_dir(cwd);
         }
 
-        // Create new process group for reliable cleanup
+        // Create new process group for reliable cleanup (Unix only)
         #[cfg(unix)]
         unsafe {
             cmd.pre_exec(|| {
@@ -274,25 +288,31 @@ impl CommandRunner {
     }
 
     async fn kill_process(mut handle: ProcessHandle) {
-        if handle.pgid > 0 {
-            #[cfg(unix)]
-            unsafe {
-                // Try graceful shutdown first
-                libc::killpg(handle.pgid, libc::SIGTERM);
-            }
-
-            // Wait a bit for graceful shutdown
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-            // Force kill if still running
-            if handle.child.try_wait().ok().flatten().is_none() {
-                #[cfg(unix)]
+        #[cfg(unix)]
+        {
+            if handle.pgid > 0 {
                 unsafe {
-                    libc::killpg(handle.pgid, libc::SIGKILL);
+                    // Try graceful shutdown first
+                    libc::killpg(handle.pgid, libc::SIGTERM);
                 }
+
+                // Wait a bit for graceful shutdown
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+                // Force kill if still running
+                if handle.child.try_wait().ok().flatten().is_none() {
+                    unsafe {
+                        libc::killpg(handle.pgid, libc::SIGKILL);
+                    }
+                }
+            } else {
+                // Fallback: kill just the child
+                let _ = handle.child.kill().await;
             }
-        } else {
-            // Fallback: kill just the child
+        }
+
+        #[cfg(windows)]
+        {
             let _ = handle.child.kill().await;
         }
     }

@@ -9,6 +9,10 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{broadcast, mpsc};
 
+#[cfg(unix)]
+#[allow(unused_imports)]
+use std::os::unix::process::CommandExt;
+
 use orkesy_core::config::ServiceConfig;
 use orkesy_core::engine::{Engine, EngineCommand};
 use orkesy_core::model::{RuntimeGraph, ServiceId, ServiceStatus};
@@ -82,11 +86,11 @@ impl LocalProcessEngine {
             cmd.env(k, v);
         }
 
-        // Create new process group using pre_exec
+        // Create new process group using pre_exec (Unix only)
         // This allows us to kill the entire process tree later
+        #[cfg(unix)]
         unsafe {
             cmd.pre_exec(|| {
-                // Create new session (and process group)
                 libc::setsid();
                 Ok(())
             });
@@ -153,36 +157,45 @@ impl LocalProcessEngine {
         Ok(())
     }
 
-    /// Kill a service's process group
     async fn kill_service(&mut self, id: &ServiceId, graceful: bool) -> Result<(), String> {
         if let Some(mut handle) = self.processes.remove(id) {
-            if handle.pgid > 0 {
-                // Send SIGTERM to process group
-                unsafe {
-                    libc::killpg(handle.pgid, libc::SIGTERM);
-                }
+            #[cfg(unix)]
+            {
+                if handle.pgid > 0 {
+                    // Send SIGTERM to process group
+                    unsafe {
+                        libc::killpg(handle.pgid, libc::SIGTERM);
+                    }
 
-                if graceful {
-                    // Give it time to gracefully shutdown
-                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    if graceful {
+                        // Give it time to gracefully shutdown
+                        tokio::time::sleep(Duration::from_millis(500)).await;
 
-                    // Check if still running
-                    if handle.child.try_wait().ok().flatten().is_none() {
-                        // Force kill
+                        // Check if still running
+                        if handle.child.try_wait().ok().flatten().is_none() {
+                            // Force kill
+                            unsafe {
+                                libc::killpg(handle.pgid, libc::SIGKILL);
+                            }
+                        }
+                    } else {
+                        // Immediate kill
                         unsafe {
                             libc::killpg(handle.pgid, libc::SIGKILL);
                         }
                     }
                 } else {
-                    // Immediate kill
-                    unsafe {
-                        libc::killpg(handle.pgid, libc::SIGKILL);
-                    }
+                    // Fallback: just kill the child
+                    let _ = handle.child.kill().await;
                 }
-            } else {
-                // Fallback: just kill the child
+            }
+
+            #[cfg(windows)]
+            {
+                let _ = graceful; // Suppress unused warning
                 let _ = handle.child.kill().await;
             }
+
             Ok(())
         } else {
             Err("process not running".into())
