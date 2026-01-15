@@ -1,0 +1,46 @@
+title: "[Question] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## ❓ Ask a Question
+
+        Stuck on something? Need help with configuration? Ask away! The community and maintainers are here to help.
+
+        **Before asking:**
+        - Check the [README](https://github.com/uzairali19/orkesy#readme) for common setup steps
+        - Search existing discussions to see if it's been answered
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your Question
+      description: What do you need help with?
+      placeholder: |
+        How do I configure...
+        Why does Orkesy...
+        What's the best way to...
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Any relevant details about your setup or what you've tried.
+      placeholder: |
+        - OS: macOS / Linux / Windows
+        - Orkesy version:
+        - What I've tried:
+    validations:
+      required: false
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration (if relevant)
+      description: Share your `orkesy.yml` or relevant config snippets.
+      render: yaml
+    validations:
+      required: false

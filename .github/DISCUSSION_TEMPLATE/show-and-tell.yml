@@ -1,0 +1,47 @@
+title: "[Show] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 🎉 Show and Tell
+
+        Built something cool with Orkesy? Got a neat setup? Share it with the community!
+
+        We love seeing how people use Orkesy in their workflows.
+
+  - type: textarea
+    id: showcase
+    attributes:
+      label: What are you sharing?
+      description: Tell us about your setup, workflow, or project.
+      placeholder: |
+        I'm using Orkesy to manage...
+        Here's my setup for...
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: Share your `orkesy.yml` so others can learn from it!
+      render: yaml
+    validations:
+      required: false
+
+  - type: textarea
+    id: tips
+    attributes:
+      label: Tips & Tricks
+      description: Any tips you've learned while using Orkesy?
+    validations:
+      required: false
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots / GIFs
+      description: Show us what it looks like!
+    validations:
+      required: false
