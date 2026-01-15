@@ -9,8 +9,64 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    name: Build & Upload Binaries
+  # ============================================
+  # Stage 1: Quality Checks (run in parallel)
+  # ============================================
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test --workspace --all-targets
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  # ============================================
+  # Stage 2: Build (needs Stage 1 to pass)
+  # ============================================
+  build:
+    name: Build (${{ matrix.target }})
+    needs: [test, clippy, fmt]
     strategy:
       fail-fast: false
       matrix:
@@ -44,7 +100,7 @@ jobs:
             . -> target
 
       - name: Install cross linker (Linux aarch64)
-        if: startsWith(matrix.os, 'ubuntu') && matrix.target == 'aarch64-unknown-linux-gnu'
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
@@ -52,8 +108,7 @@ jobs:
       - name: Build (release)
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-        run: |
-          cargo build -p orkesy-cli --bin orkesy --release --target ${{ matrix.target }}
+        run: cargo build -p orkesy-cli --bin orkesy --release --target ${{ matrix.target }}
 
       - name: Package artifact (unix)
         if: runner.os != 'Windows'
@@ -71,16 +126,34 @@ jobs:
           Copy-Item target\${{ matrix.target }}\release\orkesy.exe dist\orkesy.exe
           Compress-Archive -Path dist\orkesy.exe -DestinationPath orkesy-${{ matrix.target }}.zip -Force
 
-      - name: Upload to GitHub Release (unix)
-        if: runner.os != 'Windows'
-        uses: softprops/action-gh-release@v2
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          files: |
-            orkesy-${{ matrix.target }}.tar.gz
+          name: orkesy-${{ matrix.target }}
+          path: |
+            orkesy-*.tar.gz
+            orkesy-*.zip
+          if-no-files-found: error
 
-      - name: Upload to GitHub Release (windows)
-        if: runner.os == 'Windows'
+  # ============================================
+  # Stage 3: Publish (needs Stage 2 to pass)
+  # ============================================
+  publish:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la artifacts/
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            orkesy-${{ matrix.target }}.zip
+          files: artifacts/*
+          generate_release_notes: true

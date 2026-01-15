@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Windows build compatibility (Unix-specific code now properly gated)
 - Search now scans all logs, not just visible viewport
 - Metrics display now shows actual values (was showing zeros)
+- Clean pipelines for github workflows
 
 ### Changed
 - CI workflow now tests all 5 release targets before releases
