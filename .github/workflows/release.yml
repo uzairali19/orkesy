@@ -15,19 +15,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
-
-          # macOS
           - os: macos-latest
             target: x86_64-apple-darwin
           - os: macos-latest
             target: aarch64-apple-darwin
-
-          # Windows
           - os: windows-latest
             target: x86_64-pc-windows-msvc
 
@@ -48,7 +43,6 @@ jobs:
           workspaces: |
             . -> target
 
-      # Cross toolchain only needed for Linux aarch64-gnu on ubuntu
       - name: Install cross linker (Linux aarch64)
         if: startsWith(matrix.os, 'ubuntu') && matrix.target == 'aarch64-unknown-linux-gnu'
         run: |

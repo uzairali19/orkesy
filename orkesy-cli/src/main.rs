@@ -3114,16 +3114,25 @@ async fn tui_loop(
                                     })
                                     .collect()
                             } else {
-                                vec![DisplayLogLine { timestamp: None, text: "No output yet.".to_string() }]
+                                vec![DisplayLogLine {
+                                    timestamp: None,
+                                    text: "No output yet.".to_string(),
+                                }]
                             }
                         } else {
-                            vec![DisplayLogLine { timestamp: None, text: "No run selected.".to_string() }]
+                            vec![DisplayLogLine {
+                                timestamp: None,
+                                text: "No run selected.".to_string(),
+                            }]
                         }
                     } else if let Some(id) = selected_id {
                         if id == "all" {
                             // Merged logs from all services
                             if snapshot.logs.merged.is_empty() {
-                                vec![DisplayLogLine { timestamp: None, text: "No logs yet.".to_string() }]
+                                vec![DisplayLogLine {
+                                    timestamp: None,
+                                    text: "No logs yet.".to_string(),
+                                }]
                             } else {
                                 snapshot
                                     .logs
@@ -3144,29 +3153,39 @@ async fn tui_loop(
                                     .collect()
                             }
                         } else if let Some(log_lines) = snapshot.logs.per_service.get(id) {
-                            log_lines.iter().map(|l| DisplayLogLine {
-                                timestamp: Some(l.at),
-                                text: l.text.clone(),
-                            }).collect()
+                            log_lines
+                                .iter()
+                                .map(|l| DisplayLogLine {
+                                    timestamp: Some(l.at),
+                                    text: l.text.clone(),
+                                })
+                                .collect()
                         } else {
-                            vec![DisplayLogLine { timestamp: None, text: "No logs yet.".to_string() }]
+                            vec![DisplayLogLine {
+                                timestamp: None,
+                                text: "No logs yet.".to_string(),
+                            }]
                         }
                     } else {
-                        vec![DisplayLogLine { timestamp: None, text: "No service selected.".to_string() }]
+                        vec![DisplayLogLine {
+                            timestamp: None,
+                            text: "No service selected.".to_string(),
+                        }]
                     };
 
                     // Apply log level filter
-                    let filtered_lines: Vec<DisplayLogLine> = if ui.logs.log_filter == LogFilterMode::All {
-                        raw_lines
-                    } else {
-                        raw_lines
-                            .into_iter()
-                            .filter(|log_line| {
-                                let level = detect_level(&log_line.text);
-                                ui.logs.log_filter.matches(level)
-                            })
-                            .collect()
-                    };
+                    let filtered_lines: Vec<DisplayLogLine> =
+                        if ui.logs.log_filter == LogFilterMode::All {
+                            raw_lines
+                        } else {
+                            raw_lines
+                                .into_iter()
+                                .filter(|log_line| {
+                                    let level = detect_level(&log_line.text);
+                                    ui.logs.log_filter.matches(level)
+                                })
+                                .collect()
+                        };
 
                     // Build lines with search highlighting and timestamps
                     let search_query = ui.search_query().map(|s| s.to_lowercase());
@@ -3186,7 +3205,8 @@ async fn tui_loop(
 
                             // Check if line matches search
                             if let Some(ref query) = search_query {
-                                if !query.is_empty() && log_line.text.to_lowercase().contains(query) {
+                                if !query.is_empty() && log_line.text.to_lowercase().contains(query)
+                                {
                                     let is_current =
                                         ui.logs.matches.get(search_match_idx) == Some(&idx);
                                     let style = if is_current {
@@ -3194,7 +3214,8 @@ async fn tui_loop(
                                     } else {
                                         Style::default().bg(Color::DarkGray).fg(Color::White)
                                     };
-                                    let mut spans = vec![Span::styled(log_line.text.clone(), style)];
+                                    let mut spans =
+                                        vec![Span::styled(log_line.text.clone(), style)];
                                     if let Some(ts) = ts_span {
                                         spans.push(ts);
                                     }
@@ -3204,10 +3225,7 @@ async fn tui_loop(
 
                             // Normal line with timestamp
                             if let Some(ts) = ts_span {
-                                Line::from(vec![
-                                    Span::raw(log_line.text.clone()),
-                                    ts,
-                                ])
+                                Line::from(vec![Span::raw(log_line.text.clone()), ts])
                             } else {
                                 Line::from(log_line.text.clone())
                             }
@@ -4854,10 +4872,14 @@ async fn tui_loop(
                                             .logs
                                             .per_service
                                             .get(id)
-                                            .map(|l| l.iter().map(|x| DisplayLogLine {
-                                                timestamp: Some(x.at),
-                                                text: x.text.clone(),
-                                            }).collect())
+                                            .map(|l| {
+                                                l.iter()
+                                                    .map(|x| DisplayLogLine {
+                                                        timestamp: Some(x.at),
+                                                        text: x.text.clone(),
+                                                    })
+                                                    .collect()
+                                            })
                                             .unwrap_or_default();
                                     }
                                 }
