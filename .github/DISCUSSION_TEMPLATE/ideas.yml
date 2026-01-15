@@ -1,0 +1,36 @@
+title: "[Idea] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 💡 Share Your Idea
+
+        Got a cool idea for Orkesy? We'd love to hear it! Whether it's a new feature, integration, or workflow improvement — share your vision below.
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What's your idea?
+      description: Describe your idea in detail. What problem does it solve? How would it work?
+      placeholder: |
+        I think Orkesy could be even better if...
+    validations:
+      required: true
+
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use Case
+      description: How would you use this feature in your workflow?
+      placeholder: |
+        In my project, I often need to...
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Would you help build this?
+      options:
+        - label: I'd be interested in contributing to this feature

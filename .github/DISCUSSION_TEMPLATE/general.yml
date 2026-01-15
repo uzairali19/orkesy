@@ -1,0 +1,21 @@
+title: ""
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 💬 General Discussion
+
+        Want to chat about Orkesy, terminal UIs, or developer tooling in general? This is the place!
+
+        - Share thoughts on the roadmap
+        - Discuss best practices
+        - Connect with other users
+
+  - type: textarea
+    id: discussion
+    attributes:
+      label: What's on your mind?
+      description: Start the conversation!
+    validations:
+      required: true
