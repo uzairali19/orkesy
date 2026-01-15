@@ -28,6 +28,7 @@ pub struct ProcessAdapter {
     processes: BTreeMap<UnitId, ProcessHandle>,
     next_id: Arc<AtomicU64>,
     sys: Arc<RwLock<System>>,
+    last_metrics: BTreeMap<UnitId, UnitMetrics>,
 }
 
 impl ProcessAdapter {
@@ -37,6 +38,7 @@ impl ProcessAdapter {
             processes: BTreeMap::new(),
             next_id: Arc::new(AtomicU64::new(1)),
             sys: Arc::new(RwLock::new(System::new())),
+            last_metrics: BTreeMap::new(),
         }
     }
 
@@ -108,7 +110,6 @@ impl ProcessAdapter {
             return Err("empty start command".into());
         }
 
-        // Build command - run via shell to support pipes, env vars, etc.
         #[cfg(unix)]
         let mut cmd = {
             let mut c = Command::new("sh");
@@ -123,18 +124,14 @@ impl ProcessAdapter {
             c
         };
 
-        // Set working directory
         if let Some(cwd) = &unit.cwd {
             cmd.current_dir(cwd);
         }
 
-        // Set environment variables
         for (k, v) in &unit.env {
             cmd.env(k, v);
         }
 
-        // Create new process group using pre_exec (Unix only)
-        // This allows us to kill the entire process tree later
         #[cfg(unix)]
         unsafe {
             cmd.pre_exec(|| {
@@ -143,16 +140,13 @@ impl ProcessAdapter {
             });
         }
 
-        // Capture stdout and stderr
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
         cmd.stdin(Stdio::null());
 
-        // Spawn the process
         let mut child = cmd.spawn().map_err(|e| e.to_string())?;
         let pgid = child.id().map(|pid| pid as i32).unwrap_or(-1);
 
-        // Spawn stdout reader task
         if let Some(stdout) = child.stdout.take() {
             let tx = event_tx.clone();
             let unit_id = id.clone();
@@ -171,7 +165,6 @@ impl ProcessAdapter {
             });
         }
 
-        // Spawn stderr reader task
         if let Some(stderr) = child.stderr.take() {
             let tx = event_tx.clone();
             let unit_id = id.clone();
@@ -209,6 +202,7 @@ impl ProcessAdapter {
             .unwrap_or(StopBehavior::Signal(StopSignal::SigTerm));
 
         if let Some(mut handle) = self.processes.remove(id) {
+            self.last_metrics.remove(id);
             match &stop_behavior {
                 StopBehavior::Signal(sig) if !force => {
                     #[cfg(unix)]
@@ -224,11 +218,9 @@ impl ProcessAdapter {
                                 libc::killpg(handle.pgid, signal);
                             }
 
-                            // Give it time to gracefully shutdown (unless SIGKILL)
                             if signal != libc::SIGKILL {
                                 tokio::time::sleep(Duration::from_millis(500)).await;
 
-                                // Check if still running
                                 if handle.child.try_wait().ok().flatten().is_none() {
                                     unsafe {
                                         libc::killpg(handle.pgid, libc::SIGKILL);
@@ -248,14 +240,12 @@ impl ProcessAdapter {
                 }
 
                 StopBehavior::Command(cmd) if !force => {
-                    // Run the stop command
                     #[cfg(unix)]
                     let output = Command::new("sh").arg("-c").arg(cmd).output().await;
                     #[cfg(windows)]
                     let output = Command::new("cmd").args(["/C", cmd]).output().await;
 
                     if let Err(e) = output {
-                        // Fallback to kill
                         #[cfg(unix)]
                         if handle.pgid > 0 {
                             unsafe {
@@ -271,7 +261,6 @@ impl ProcessAdapter {
                 }
 
                 _ => {
-                    // Force kill
                     #[cfg(unix)]
                     if handle.pgid > 0 {
                         unsafe {
@@ -331,7 +320,6 @@ impl ProcessAdapter {
 
             let output = command.output().await.map_err(|e| e.to_string())?;
 
-            // Emit stdout
             if !output.stdout.is_empty() {
                 if let Ok(s) = String::from_utf8(output.stdout) {
                     for line in s.lines() {
@@ -347,7 +335,6 @@ impl ProcessAdapter {
                 }
             }
 
-            // Emit stderr
             if !output.stderr.is_empty() {
                 if let Ok(s) = String::from_utf8(output.stderr) {
                     for line in s.lines() {
@@ -410,12 +397,10 @@ impl Adapter for ProcessAdapter {
         event_tx: broadcast::Sender<AdapterEvent>,
         units: Vec<Unit>,
     ) {
-        // Index units by ID
         for unit in units {
             self.units.insert(unit.id.clone(), unit);
         }
 
-        // Main loop: process commands + monitor child exits + collect metrics
         let mut check_interval = tokio::time::interval(Duration::from_millis(100));
         check_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -425,7 +410,6 @@ impl Adapter for ProcessAdapter {
         loop {
             tokio::select! {
                 _ = check_interval.tick() => {
-                    // Check for exited processes
                     let mut exited = vec![];
                     for (id, handle) in &mut self.processes {
                         if let Ok(Some(status)) = handle.child.try_wait() {
@@ -435,17 +419,18 @@ impl Adapter for ProcessAdapter {
 
                     for (id, code) in exited {
                         self.processes.remove(&id);
+                        self.last_metrics.remove(&id);
                         self.emit_status(&event_tx, &id, UnitStatus::Exited { code });
                         self.emit_log(&event_tx, &id, format!("process exited with code: {:?}", code));
                     }
                 }
 
                 _ = metrics_interval.tick() => {
-                    // Collect and emit metrics for all running processes
                     for (id, handle) in &self.processes {
                         if let Some(pid) = handle.child.id() {
                             let uptime = handle.started_at.elapsed().as_secs();
                             let metrics = self.collect_metrics(pid, uptime).await;
+                            self.last_metrics.insert(id.clone(), metrics.clone());
                             self.emit(&event_tx, AdapterEvent::MetricsUpdated {
                                 id: id.clone(),
                                 metrics,
@@ -459,7 +444,6 @@ impl Adapter for ProcessAdapter {
 
                     match cmd {
                         AdapterCommand::Shutdown => {
-                            // Kill all running processes
                             let ids: Vec<_> = self.processes.keys().cloned().collect();
                             for id in ids {
                                 let _ = self.stop_unit(&id, false).await;
@@ -503,11 +487,9 @@ impl Adapter for ProcessAdapter {
                         AdapterCommand::Restart { id } => {
                             self.emit_log(&event_tx, &id, "restarting...".into());
 
-                            // Stop existing
                             let _ = self.stop_unit(&id, false).await;
                             tokio::time::sleep(Duration::from_millis(100)).await;
 
-                            // Start again
                             self.emit_status(&event_tx, &id, UnitStatus::Starting);
                             match self.spawn_unit(&id, &event_tx).await {
                                 Ok(()) => {
@@ -554,7 +536,6 @@ impl Adapter for ProcessAdapter {
                         }
 
                         AdapterCommand::ClearLogs { id } => {
-                            // This is handled by the state/reducer, just acknowledge
                             self.emit_log(&event_tx, &id, "logs cleared".into());
                         }
 
@@ -577,7 +558,6 @@ impl Adapter for ProcessAdapter {
                                 continue;
                             }
 
-                            // Get unit's cwd and env
                             let unit = self.units.get(&id);
                             let mut command = Command::new(&cmd[0]);
                             command.args(&cmd[1..]);
@@ -652,13 +632,14 @@ impl Adapter for ProcessAdapter {
     }
 
     fn metrics(&self, id: &str) -> Option<UnitMetrics> {
-        self.processes.get(id).map(|handle| {
-            UnitMetrics {
-                cpu_percent: 0.0, // TODO: Use sysinfo crate
-                memory_bytes: 0,  // TODO: Use sysinfo crate
-                uptime_secs: handle.started_at.elapsed().as_secs(),
-                pid: handle.child.id(),
-            }
+        if let Some(cached) = self.last_metrics.get(id) {
+            return Some(cached.clone());
+        }
+        self.processes.get(id).map(|handle| UnitMetrics {
+            cpu_percent: 0.0,
+            memory_bytes: 0,
+            uptime_secs: handle.started_at.elapsed().as_secs(),
+            pid: handle.child.id(),
         })
     }
 }

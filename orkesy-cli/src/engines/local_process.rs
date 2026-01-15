@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use async_trait::async_trait;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -13,7 +13,7 @@ use tokio::sync::{broadcast, mpsc};
 #[allow(unused_imports)]
 use std::os::unix::process::CommandExt;
 
-use orkesy_core::config::ServiceConfig;
+use orkesy_core::config::{RestartPolicy, ServiceConfig};
 use orkesy_core::engine::{Engine, EngineCommand};
 use orkesy_core::model::{RuntimeGraph, ServiceId, ServiceStatus};
 use orkesy_core::reducer::{EventEnvelope, RuntimeEvent};
@@ -24,10 +24,39 @@ struct ProcessHandle {
     pgid: i32,
 }
 
+struct RestartTracker {
+    count: u32,
+    window_start: Instant,
+}
+
+impl RestartTracker {
+    fn new() -> Self {
+        Self {
+            count: 0,
+            window_start: Instant::now(),
+        }
+    }
+
+    fn can_restart(&mut self, max_restarts: u32, window_secs: u64) -> bool {
+        let now = Instant::now();
+        if now.duration_since(self.window_start).as_secs() >= window_secs {
+            self.count = 0;
+            self.window_start = now;
+        }
+        if self.count < max_restarts {
+            self.count += 1;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 pub struct LocalProcessEngine {
     configs: BTreeMap<ServiceId, ServiceConfig>,
     processes: BTreeMap<ServiceId, ProcessHandle>,
     next_id: Arc<AtomicU64>,
+    restart_trackers: BTreeMap<ServiceId, RestartTracker>,
 }
 
 impl LocalProcessEngine {
@@ -36,10 +65,10 @@ impl LocalProcessEngine {
             configs: BTreeMap::new(),
             processes: BTreeMap::new(),
             next_id: Arc::new(AtomicU64::new(1)),
+            restart_trackers: BTreeMap::new(),
         }
     }
 
-    /// Set service configurations from loaded config
     pub fn with_configs(mut self, configs: BTreeMap<ServiceId, ServiceConfig>) -> Self {
         self.configs = configs;
         self
@@ -57,7 +86,6 @@ impl LocalProcessEngine {
         });
     }
 
-    /// Spawn a service process
     async fn spawn_service(
         &mut self,
         id: &ServiceId,
@@ -72,22 +100,17 @@ impl LocalProcessEngine {
             return Err("empty command".into());
         }
 
-        // Build the command
         let mut cmd = Command::new(&config.command[0]);
         cmd.args(&config.command[1..]);
 
-        // Set working directory
         if let Some(cwd) = &config.cwd {
             cmd.current_dir(cwd);
         }
 
-        // Set environment variables
         for (k, v) in &config.env {
             cmd.env(k, v);
         }
 
-        // Create new process group using pre_exec (Unix only)
-        // This allows us to kill the entire process tree later
         #[cfg(unix)]
         unsafe {
             cmd.pre_exec(|| {
@@ -96,19 +119,14 @@ impl LocalProcessEngine {
             });
         }
 
-        // Capture stdout and stderr
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
-
-        // Prevent child from inheriting stdin
         cmd.stdin(Stdio::null());
 
-        // Spawn the process
         let mut child = cmd.spawn().map_err(|e| e.to_string())?;
 
         let pgid = child.id().map(|pid| pid as i32).unwrap_or(-1);
 
-        // Spawn stdout reader task
         if let Some(stdout) = child.stdout.take() {
             let tx = event_tx.clone();
             let service_id = id.clone();
@@ -130,7 +148,6 @@ impl LocalProcessEngine {
             });
         }
 
-        // Spawn stderr reader task
         if let Some(stderr) = child.stderr.take() {
             let tx = event_tx.clone();
             let service_id = id.clone();
@@ -162,30 +179,24 @@ impl LocalProcessEngine {
             #[cfg(unix)]
             {
                 if handle.pgid > 0 {
-                    // Send SIGTERM to process group
                     unsafe {
                         libc::killpg(handle.pgid, libc::SIGTERM);
                     }
 
                     if graceful {
-                        // Give it time to gracefully shutdown
                         tokio::time::sleep(Duration::from_millis(500)).await;
 
-                        // Check if still running
                         if handle.child.try_wait().ok().flatten().is_none() {
-                            // Force kill
                             unsafe {
                                 libc::killpg(handle.pgid, libc::SIGKILL);
                             }
                         }
                     } else {
-                        // Immediate kill
                         unsafe {
                             libc::killpg(handle.pgid, libc::SIGKILL);
                         }
                     }
                 } else {
-                    // Fallback: just kill the child
                     let _ = handle.child.kill().await;
                 }
             }
@@ -221,7 +232,6 @@ impl Engine for LocalProcessEngine {
         event_tx: broadcast::Sender<EventEnvelope>,
         graph: RuntimeGraph,
     ) {
-        // Emit topology loaded
         self.emit(
             &event_tx,
             RuntimeEvent::TopologyLoaded {
@@ -229,7 +239,6 @@ impl Engine for LocalProcessEngine {
             },
         );
 
-        // Auto-start services marked for autostart
         for (id, node) in &graph.nodes {
             if matches!(node.desired, orkesy_core::model::DesiredState::Running) {
                 self.emit(
@@ -271,14 +280,12 @@ impl Engine for LocalProcessEngine {
             }
         }
 
-        // Main loop: process commands + monitor child exits
         let mut check_interval = tokio::time::interval(Duration::from_millis(100));
         check_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
             tokio::select! {
                 _ = check_interval.tick() => {
-                    // Check for exited processes
                     let mut exited = vec![];
                     for (id, handle) in &mut self.processes {
                         if let Ok(Some(status)) = handle.child.try_wait() {
@@ -298,13 +305,88 @@ impl Engine for LocalProcessEngine {
                         self.emit(
                             &event_tx,
                             RuntimeEvent::LogLine {
-                                id,
+                                id: id.clone(),
                                 stream: LogStream::System,
                                 text: format!("process exited with code: {:?}", code),
                             },
                         );
 
-                        // TODO: Handle restart policy here
+                        if let Some(config) = self.configs.get(&id) {
+                            let should_restart = match &config.restart {
+                                RestartPolicy::Always => true,
+                                RestartPolicy::OnFailure => code != Some(0),
+                                RestartPolicy::Never => false,
+                            };
+
+                            if should_restart {
+                                let tracker = self.restart_trackers
+                                    .entry(id.clone())
+                                    .or_insert_with(RestartTracker::new);
+
+                                let can_restart = tracker.can_restart(3, 60);
+                                let restart_count = tracker.count;
+                                let delay_ms = config.restart_delay_ms.unwrap_or(1000);
+
+                                if can_restart {
+                                    self.emit(
+                                        &event_tx,
+                                        RuntimeEvent::LogLine {
+                                            id: id.clone(),
+                                            stream: LogStream::System,
+                                            text: format!("restarting in {}ms (attempt {}/3)...", delay_ms, restart_count),
+                                        },
+                                    );
+
+                                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+
+                                    self.emit(
+                                        &event_tx,
+                                        RuntimeEvent::StatusChanged {
+                                            id: id.clone(),
+                                            status: ServiceStatus::Restarting,
+                                        },
+                                    );
+
+                                    match self.spawn_service(&id, &event_tx).await {
+                                        Ok(()) => {
+                                            self.emit(
+                                                &event_tx,
+                                                RuntimeEvent::StatusChanged {
+                                                    id: id.clone(),
+                                                    status: ServiceStatus::Running,
+                                                },
+                                            );
+                                        }
+                                        Err(e) => {
+                                            self.emit(
+                                                &event_tx,
+                                                RuntimeEvent::StatusChanged {
+                                                    id: id.clone(),
+                                                    status: ServiceStatus::Errored { message: e.clone() },
+                                                },
+                                            );
+                                            self.emit(
+                                                &event_tx,
+                                                RuntimeEvent::LogLine {
+                                                    id: id.clone(),
+                                                    stream: LogStream::System,
+                                                    text: format!("[error] restart failed: {}", e),
+                                                },
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    self.emit(
+                                        &event_tx,
+                                        RuntimeEvent::LogLine {
+                                            id: id.clone(),
+                                            stream: LogStream::System,
+                                            text: "restart limit reached (3 restarts in 60s), not restarting".into(),
+                                        },
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -313,7 +395,6 @@ impl Engine for LocalProcessEngine {
 
                     match cmd {
                         EngineCommand::Shutdown => {
-                            // Kill all running processes
                             let ids: Vec<_> = self.processes.keys().cloned().collect();
                             for id in ids {
                                 let _ = self.kill_service(&id, true).await;
@@ -414,13 +495,9 @@ impl Engine for LocalProcessEngine {
                                 },
                             );
 
-                            // Kill existing process
                             let _ = self.kill_service(&id, true).await;
-
-                            // Small delay before restart
                             tokio::time::sleep(Duration::from_millis(100)).await;
 
-                            // Start again
                             match self.spawn_service(&id, &event_tx).await {
                                 Ok(()) => {
                                     self.emit(
@@ -493,7 +570,6 @@ impl Engine for LocalProcessEngine {
 
                         EngineCommand::Toggle { id } => {
                             if self.processes.contains_key(&id) {
-                                // Running -> Stop
                                 self.emit(
                                     &event_tx,
                                     RuntimeEvent::LogLine {
@@ -511,7 +587,6 @@ impl Engine for LocalProcessEngine {
                                     },
                                 );
                             } else {
-                                // Stopped -> Start
                                 self.emit(
                                     &event_tx,
                                     RuntimeEvent::StatusChanged {
@@ -577,7 +652,6 @@ impl Engine for LocalProcessEngine {
                                 continue;
                             }
 
-                            // Execute the command
                             let output = tokio::process::Command::new(&cmd[0])
                                 .args(&cmd[1..])
                                 .output()
@@ -585,7 +659,6 @@ impl Engine for LocalProcessEngine {
 
                             match output {
                                 Ok(out) => {
-                                    // Emit stdout lines
                                     if !out.stdout.is_empty() {
                                         if let Ok(s) = String::from_utf8(out.stdout) {
                                             for line in s.lines() {
@@ -600,7 +673,6 @@ impl Engine for LocalProcessEngine {
                                             }
                                         }
                                     }
-                                    // Emit stderr lines
                                     if !out.stderr.is_empty() {
                                         if let Ok(s) = String::from_utf8(out.stderr) {
                                             for line in s.lines() {
@@ -615,7 +687,6 @@ impl Engine for LocalProcessEngine {
                                             }
                                         }
                                     }
-                                    // Emit exit status
                                     let status = if out.status.success() {
                                         "ok".to_string()
                                     } else {

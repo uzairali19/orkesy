@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use clap::{Parser, Subcommand};
 use crossterm::{
@@ -44,6 +44,7 @@ use tokio::sync::{RwLock, broadcast, mpsc};
 
 use orkesy_core::adapter::{Adapter, AdapterCommand, AdapterEvent, LogStream};
 use orkesy_core::config::OrkesyConfig;
+use orkesy_core::log_filter::{LogFilterMode, detect_level};
 use orkesy_core::model::*;
 use orkesy_core::reducer::*;
 use orkesy_core::state::*;
@@ -52,6 +53,27 @@ use orkesy_core::unit::{Unit, UnitStatus as AdapterUnitStatus};
 use adapters::ProcessAdapter;
 use engines::FakeEngine;
 use ui::styles;
+
+/// Format a SystemTime as HH:MM:SS for log display
+fn format_timestamp(time: SystemTime) -> String {
+    match time.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(duration) => {
+            let secs = duration.as_secs();
+            let hours = (secs / 3600) % 24;
+            let minutes = (secs / 60) % 60;
+            let seconds = secs % 60;
+            format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+        }
+        Err(_) => "??:??:??".to_string(),
+    }
+}
+
+/// A log line with optional timestamp for display
+#[derive(Clone, Debug)]
+struct DisplayLogLine {
+    timestamp: Option<SystemTime>,
+    text: String,
+}
 
 #[derive(Parser)]
 #[command(name = "orkesy")]
@@ -769,7 +791,8 @@ struct LogsUiState {
     search: Option<String>,
     matches: Vec<usize>,
     match_idx: usize,
-    frozen_logs: Vec<String>,
+    frozen_logs: Vec<DisplayLogLine>,
+    log_filter: LogFilterMode,
 }
 
 impl LogsUiState {
@@ -2845,7 +2868,19 @@ async fn tui_loop(
                         ui.logs
                             .frozen_logs
                             .iter()
-                            .map(|s| Line::from(s.clone()))
+                            .map(|log_line| {
+                                if let Some(ts) = log_line.timestamp {
+                                    Line::from(vec![
+                                        Span::raw(log_line.text.clone()),
+                                        Span::styled(
+                                            format!(" {}", format_timestamp(ts)),
+                                            Style::default().fg(Color::DarkGray),
+                                        ),
+                                    ])
+                                } else {
+                                    Line::from(log_line.text.clone())
+                                }
+                            })
                             .collect::<Vec<_>>(),
                     )
                 } else if let Some(id) = selected_id {
@@ -3058,7 +3093,7 @@ async fn tui_loop(
             let log_scroll = ui.scroll_offset();
             let scrolled_text: Text = match ui.view {
                 View::Logs => {
-                    let raw_lines: Vec<String> = if ui.logs.paused {
+                    let raw_lines: Vec<DisplayLogLine> = if ui.logs.paused {
                         ui.logs.frozen_logs.clone()
                     } else if ui.left_mode == LeftMode::Runs {
                         // Runs mode: show logs for selected run
@@ -3072,20 +3107,23 @@ async fn tui_loop(
                                             LogStream::System => "[system] ",
                                             LogStream::Stdout => "",
                                         };
-                                        format!("{}{}", prefix, l.text)
+                                        DisplayLogLine {
+                                            timestamp: Some(l.at),
+                                            text: format!("{}{}", prefix, l.text),
+                                        }
                                     })
                                     .collect()
                             } else {
-                                vec!["No output yet.".to_string()]
+                                vec![DisplayLogLine { timestamp: None, text: "No output yet.".to_string() }]
                             }
                         } else {
-                            vec!["No run selected.".to_string()]
+                            vec![DisplayLogLine { timestamp: None, text: "No run selected.".to_string() }]
                         }
                     } else if let Some(id) = selected_id {
                         if id == "all" {
                             // Merged logs from all services
                             if snapshot.logs.merged.is_empty() {
-                                vec!["No logs yet.".to_string()]
+                                vec![DisplayLogLine { timestamp: None, text: "No logs yet.".to_string() }]
                             } else {
                                 snapshot
                                     .logs
@@ -3098,30 +3136,57 @@ async fn tui_loop(
                                             LogStream::System => "[system] ",
                                             LogStream::Stdout => "",
                                         };
-                                        format!("{}{}{}", prefix, stream_prefix, l.text)
+                                        DisplayLogLine {
+                                            timestamp: Some(l.at),
+                                            text: format!("{}{}{}", prefix, stream_prefix, l.text),
+                                        }
                                     })
                                     .collect()
                             }
                         } else if let Some(log_lines) = snapshot.logs.per_service.get(id) {
-                            log_lines.iter().map(|l| l.text.clone()).collect()
+                            log_lines.iter().map(|l| DisplayLogLine {
+                                timestamp: Some(l.at),
+                                text: l.text.clone(),
+                            }).collect()
                         } else {
-                            vec!["No logs yet.".to_string()]
+                            vec![DisplayLogLine { timestamp: None, text: "No logs yet.".to_string() }]
                         }
                     } else {
-                        vec!["No service selected.".to_string()]
+                        vec![DisplayLogLine { timestamp: None, text: "No service selected.".to_string() }]
                     };
 
-                    // Build lines with search highlighting
+                    // Apply log level filter
+                    let filtered_lines: Vec<DisplayLogLine> = if ui.logs.log_filter == LogFilterMode::All {
+                        raw_lines
+                    } else {
+                        raw_lines
+                            .into_iter()
+                            .filter(|log_line| {
+                                let level = detect_level(&log_line.text);
+                                ui.logs.log_filter.matches(level)
+                            })
+                            .collect()
+                    };
+
+                    // Build lines with search highlighting and timestamps
                     let search_query = ui.search_query().map(|s| s.to_lowercase());
                     let search_match_idx = ui.logs.match_idx;
 
-                    let all_lines: Vec<Line> = raw_lines
+                    let all_lines: Vec<Line> = filtered_lines
                         .iter()
                         .enumerate()
-                        .map(|(idx, text)| {
+                        .map(|(idx, log_line)| {
+                            // Format timestamp if available
+                            let ts_span = log_line.timestamp.map(|t| {
+                                Span::styled(
+                                    format!(" {}", format_timestamp(t)),
+                                    Style::default().fg(Color::DarkGray),
+                                )
+                            });
+
                             // Check if line matches search
                             if let Some(ref query) = search_query {
-                                if !query.is_empty() && text.to_lowercase().contains(query) {
+                                if !query.is_empty() && log_line.text.to_lowercase().contains(query) {
                                     let is_current =
                                         ui.logs.matches.get(search_match_idx) == Some(&idx);
                                     let style = if is_current {
@@ -3129,11 +3194,23 @@ async fn tui_loop(
                                     } else {
                                         Style::default().bg(Color::DarkGray).fg(Color::White)
                                     };
-                                    return Line::styled(text.clone(), style);
+                                    let mut spans = vec![Span::styled(log_line.text.clone(), style)];
+                                    if let Some(ts) = ts_span {
+                                        spans.push(ts);
+                                    }
+                                    return Line::from(spans);
                                 }
                             }
 
-                            Line::from(text.clone())
+                            // Normal line with timestamp
+                            if let Some(ts) = ts_span {
+                                Line::from(vec![
+                                    Span::raw(log_line.text.clone()),
+                                    ts,
+                                ])
+                            } else {
+                                Line::from(log_line.text.clone())
+                            }
                         })
                         .collect();
 
@@ -3667,14 +3744,25 @@ async fn tui_loop(
                     Span::styled("↑↓", styles::key_hint()),
                     Span::styled(" scroll", styles::text_dim()),
                 ],
-                (Focus::RightPane, View::Logs) => vec![
-                    Span::styled("Space", styles::key_hint()),
-                    Span::styled(" pause  ", styles::text_dim()),
-                    Span::styled("f", styles::key_hint()),
-                    Span::styled(" follow  ", styles::text_dim()),
-                    Span::styled("s", styles::key_hint()),
-                    Span::styled(" search", styles::text_dim()),
-                ],
+                (Focus::RightPane, View::Logs) => {
+                    let filter_label = ui.logs.log_filter.label();
+                    let filter_style = if ui.logs.log_filter == LogFilterMode::All {
+                        styles::text_dim()
+                    } else {
+                        styles::warn()
+                    };
+                    vec![
+                        Span::styled("Space", styles::key_hint()),
+                        Span::styled(" pause  ", styles::text_dim()),
+                        Span::styled("f", styles::key_hint()),
+                        Span::styled(" follow  ", styles::text_dim()),
+                        Span::styled("s", styles::key_hint()),
+                        Span::styled(" search  ", styles::text_dim()),
+                        Span::styled("e/w/a", styles::key_hint()),
+                        Span::styled(" filter  ", styles::text_dim()),
+                        Span::styled(format!("[{}]", filter_label), filter_style),
+                    ]
+                }
                 (Focus::RightPane, View::Metrics) => {
                     if ui.metrics_paused {
                         vec![
@@ -4029,23 +4117,78 @@ async fn tui_loop(
 
         // ========== KEY HANDLING (new state machine) ==========
 
-        // Helper to update search matches
-        let update_search_matches =
-            |query: &str, snapshot: &RuntimeState, sid: Option<&str>| -> Vec<usize> {
-                if query.is_empty() {
-                    return vec![];
-                }
-                let search_lower = query.to_lowercase();
-                let logs = sid
-                    .and_then(|id| snapshot.logs.per_service.get(id))
-                    .map(|l| l.iter().map(|x| x.text.clone()).collect::<Vec<_>>())
-                    .unwrap_or_default();
-                logs.iter()
-                    .enumerate()
-                    .filter(|(_, text)| text.to_lowercase().contains(&search_lower))
-                    .map(|(idx, _)| idx)
+        // Helper to get the total number of log lines for scrolling calculations
+        let get_log_line_count = |snapshot: &RuntimeState,
+                                  sid: Option<&str>,
+                                  left_mode: LeftMode,
+                                  selected_run: usize,
+                                  paused: bool,
+                                  frozen_logs: &[DisplayLogLine]|
+         -> usize {
+            if paused {
+                frozen_logs.len()
+            } else if left_mode == LeftMode::Runs {
+                snapshot
+                    .run_order
+                    .get(selected_run)
+                    .and_then(|run_id| snapshot.logs.per_run.get(run_id))
+                    .map(|l| l.len())
+                    .unwrap_or(0)
+            } else if sid == Some("all") {
+                snapshot.logs.merged.len()
+            } else {
+                sid.and_then(|id| snapshot.logs.per_service.get(id))
+                    .map(|l| l.len())
+                    .unwrap_or(0)
+            }
+        };
+
+        // Helper to update search matches - searches the correct buffer based on view mode
+        let update_search_matches = |query: &str,
+                                     snapshot: &RuntimeState,
+                                     sid: Option<&str>,
+                                     left_mode: LeftMode,
+                                     selected_run: usize,
+                                     paused: bool,
+                                     frozen_logs: &[DisplayLogLine]|
+         -> Vec<usize> {
+            if query.is_empty() {
+                return vec![];
+            }
+            let search_lower = query.to_lowercase();
+
+            // Get the log texts based on current view mode (matching the display logic)
+            let logs: Vec<String> = if paused {
+                frozen_logs.iter().map(|l| l.text.clone()).collect()
+            } else if left_mode == LeftMode::Runs {
+                // Search per_run logs
+                snapshot
+                    .run_order
+                    .get(selected_run)
+                    .and_then(|run_id| snapshot.logs.per_run.get(run_id))
+                    .map(|l| l.iter().map(|x| x.text.clone()).collect())
+                    .unwrap_or_default()
+            } else if sid == Some("all") {
+                // Search merged logs
+                snapshot
+                    .logs
+                    .merged
+                    .iter()
+                    .map(|l| l.text.clone())
                     .collect()
+            } else {
+                // Search per_service logs
+                sid.and_then(|id| snapshot.logs.per_service.get(id))
+                    .map(|l| l.iter().map(|x| x.text.clone()).collect())
+                    .unwrap_or_default()
             };
+
+            logs.iter()
+                .enumerate()
+                .filter(|(_, text)| text.to_lowercase().contains(&search_lower))
+                .map(|(idx, _)| idx)
+                .collect()
+        };
 
         // ---------- HELP MODE ----------
         if ui.help_open {
@@ -4252,22 +4395,104 @@ async fn tui_loop(
                     if let Some(ref mut query) = ui.logs.search {
                         query.pop();
                         let snap = state.read().await;
-                        ui.logs.matches = update_search_matches(query, &snap, selected_id);
+                        ui.logs.matches = update_search_matches(
+                            query,
+                            &snap,
+                            selected_id,
+                            ui.left_mode,
+                            ui.selected_run,
+                            ui.logs.paused,
+                            &ui.logs.frozen_logs,
+                        );
                         ui.logs.match_idx = 0;
+
+                        // Auto-scroll to first match
+                        if let Some(&match_line) = ui.logs.matches.first() {
+                            let total_lines = get_log_line_count(
+                                &snap,
+                                selected_id,
+                                ui.left_mode,
+                                ui.selected_run,
+                                ui.logs.paused,
+                                &ui.logs.frozen_logs,
+                            );
+                            let viewport_approx = 20;
+                            let from_bottom = total_lines.saturating_sub(match_line + 1);
+                            ui.logs.scroll = from_bottom.saturating_sub(viewport_approx / 2);
+                            ui.logs.follow = false;
+                        }
                     }
                 }
                 KeyCode::Down | KeyCode::Char('n') => {
                     ui.logs.next_match();
+                    // Scroll to show the match
+                    if let Some(&match_line) = ui.logs.matches.get(ui.logs.match_idx) {
+                        let snap = state.read().await;
+                        let total_lines = get_log_line_count(
+                            &snap,
+                            selected_id,
+                            ui.left_mode,
+                            ui.selected_run,
+                            ui.logs.paused,
+                            &ui.logs.frozen_logs,
+                        );
+                        // Scroll to center the match (scroll is lines from bottom)
+                        let viewport_approx = 20; // Approximate viewport height
+                        let from_bottom = total_lines.saturating_sub(match_line + 1);
+                        ui.logs.scroll = from_bottom.saturating_sub(viewport_approx / 2);
+                        ui.logs.follow = false;
+                    }
                 }
                 KeyCode::Up | KeyCode::Char('N') => {
                     ui.logs.prev_match();
+                    // Scroll to show the match
+                    if let Some(&match_line) = ui.logs.matches.get(ui.logs.match_idx) {
+                        let snap = state.read().await;
+                        let total_lines = get_log_line_count(
+                            &snap,
+                            selected_id,
+                            ui.left_mode,
+                            ui.selected_run,
+                            ui.logs.paused,
+                            &ui.logs.frozen_logs,
+                        );
+                        // Scroll to center the match (scroll is lines from bottom)
+                        let viewport_approx = 20;
+                        let from_bottom = total_lines.saturating_sub(match_line + 1);
+                        ui.logs.scroll = from_bottom.saturating_sub(viewport_approx / 2);
+                        ui.logs.follow = false;
+                    }
                 }
                 KeyCode::Char(c) => {
                     if let Some(ref mut query) = ui.logs.search {
                         query.push(c);
                         let snap = state.read().await;
-                        ui.logs.matches = update_search_matches(query, &snap, selected_id);
+                        ui.logs.matches = update_search_matches(
+                            query,
+                            &snap,
+                            selected_id,
+                            ui.left_mode,
+                            ui.selected_run,
+                            ui.logs.paused,
+                            &ui.logs.frozen_logs,
+                        );
                         ui.logs.match_idx = 0;
+
+                        // Auto-scroll to first match
+                        if let Some(&match_line) = ui.logs.matches.first() {
+                            let total_lines = get_log_line_count(
+                                &snap,
+                                selected_id,
+                                ui.left_mode,
+                                ui.selected_run,
+                                ui.logs.paused,
+                                &ui.logs.frozen_logs,
+                            );
+                            let viewport_approx = 20;
+                            let from_bottom = total_lines.saturating_sub(match_line + 1);
+                            ui.logs.scroll = from_bottom.saturating_sub(viewport_approx / 2);
+                            ui.logs.follow = false;
+                        }
                     }
                 }
                 _ => {}
@@ -4629,10 +4854,23 @@ async fn tui_loop(
                                             .logs
                                             .per_service
                                             .get(id)
-                                            .map(|l| l.iter().map(|x| x.text.clone()).collect())
+                                            .map(|l| l.iter().map(|x| DisplayLogLine {
+                                                timestamp: Some(x.at),
+                                                text: x.text.clone(),
+                                            }).collect())
                                             .unwrap_or_default();
                                     }
                                 }
+                            }
+                            // Log level filter keys
+                            KeyCode::Char('e') => {
+                                ui.logs.log_filter = LogFilterMode::ErrorOnly;
+                            }
+                            KeyCode::Char('w') => {
+                                ui.logs.log_filter = LogFilterMode::WarnAndAbove;
+                            }
+                            KeyCode::Char('a') => {
+                                ui.logs.log_filter = LogFilterMode::All;
                             }
                             // Legacy view keys
                             KeyCode::Char('l') => {

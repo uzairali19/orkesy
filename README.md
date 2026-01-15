@@ -20,10 +20,9 @@
 
 ---
 
-<!-- Screenshot placeholder - add a demo GIF here -->
-<!-- <p align="center">
-  <img src="assets/demo.gif" width="700" alt="Orkesy demo" />
-</p> -->
+<p align="center">
+  <img src="output.gif" width="700" alt="Orkesy demo" />
+</p>
 
 ## What is Orkesy?
 
@@ -46,10 +45,11 @@ It's **runtime-agnostic** - if it can start, stop, and emit logs, Orkesy can man
 
 | Feature | Description |
 |---|---|
-| ⚡ **Real-time logs** | Stream, pause, scroll, search, filter |
-| 📊 **Live metrics** | CPU, memory, network, log rate charts |
+| ⚡ **Real-time logs** | Stream, pause, search, filter by level (error/warn/all) |
+| 🕐 **Timestamps** | HH:MM:SS timestamps on every log line |
+| 📊 **Live metrics** | CPU, memory, uptime per service |
 | ⌨️ **Command palette** | Fuzzy search with `/` (VS Code style) |
-| 🔄 **Lifecycle control** | Start, stop, restart, kill services |
+| 🔄 **Lifecycle control** | Start, stop, restart, kill with auto-restart policy |
 | ❤️ **Health checks** | HTTP, TCP, and exec-based probes |
 | 🧩 **Dependency graph** | Visualize service relationships |
 | 🔍 **Auto-detection** | Node, Rust, Docker Compose, Make, Just |
@@ -162,6 +162,9 @@ units:
 | `f` | Follow mode |
 | `s` | Search |
 | `n/N` | Next/prev match |
+| `e` | Filter: errors only |
+| `w` | Filter: warn and above |
+| `a` | Filter: all levels |
 
 ### Views
 
@@ -243,24 +246,85 @@ orkesy/
 
 ## Roadmap
 
-- [ ] Remote services (SSH, Kubernetes)
-- [ ] Persistent metrics history
-- [ ] Custom keybindings
-- [ ] Theme customization
-- [ ] Plugin system
-- [ ] Notifications & alerts
+See the **[detailed roadmap](docs/ROADMAP.md)** for version milestones and planned features.
+
+### Upcoming Releases
+
+| Version | Target | Theme |
+|---------|--------|-------|
+| **v0.2.0** | Q1 2026 | Enhanced Detection & Init — Python, Go, Ruby, PHP detection; interactive init mode |
+| **v0.3.0** | Q2 2026 | Logs & Search — Persistent history, regex search, log export, time filtering |
+| **v0.4.0** | Q3 2026 | Remote Services — SSH adapter, Kubernetes integration, pod management |
+| **v0.5.0** | Q4 2026 | Plugin System — Custom keybindings, themes, Lua scripting, integrations |
+| **v1.0.0** | Q1 2027 | Production Ready — Enterprise features, performance optimization, full docs |
+
+### Current Focus (v0.2.0)
+- [ ] Python project detection (pyproject.toml, poetry, uv)
+- [ ] Go project detection (go.mod)
+- [ ] Interactive `orkesy init` with TUI-based service selection
+- [ ] Ruby/PHP project detection
+
+### Recently Completed
+- [x] Cross-platform support (Linux, macOS, Windows)
+- [x] Real-time log streaming with timestamps and level filtering
+- [x] Search with auto-scroll to matches
+- [x] Live CPU/memory metrics per service
+- [x] Automatic restart policy with backoff
+- [x] Health checks (HTTP, TCP, exec)
+- [x] Command palette with fuzzy search
+- [x] Project detection: Node.js, Rust, Docker Compose, Make, Just
 
 ---
 
 ## Contributing
 
-Contributions welcome! Please open an issue first to discuss changes.
+Contributions are welcome! Whether it's bug fixes, new features, or documentation improvements.
+
+### Getting Started
 
 ```bash
-cargo test              # Run tests
-cargo clippy            # Lint
-cargo fmt               # Format
+# Clone the repo
+git clone https://github.com/uzairali19/orkesy.git
+cd orkesy
+
+# Build and run
+cargo build
+cargo run -- --engine fake   # Demo mode
+
+# Run checks
+cargo test                   # Run tests
+cargo clippy                 # Lint
+cargo fmt                    # Format
 ```
+
+### Development Workflow
+
+1. **Fork** the repository
+2. **Create a branch** for your feature (`git checkout -b feature/my-feature`)
+3. **Make changes** and add tests if applicable
+4. **Run checks** — ensure `cargo test`, `cargo clippy`, and `cargo fmt` pass
+5. **Commit** with a clear message
+6. **Open a PR** against `main`
+
+### Good First Issues
+
+Look for issues labeled [`good first issue`](https://github.com/uzairali19/orkesy/labels/good%20first%20issue) — these are great starting points for new contributors.
+
+### Areas for Contribution
+
+- **New detectors** — Add support for Python, Go, Ruby, or other ecosystems in `orkesy-cli/src/detectors/`
+- **Health check types** — Extend health probes in `orkesy-cli/src/health.rs`
+- **UI improvements** — Enhance the TUI in `orkesy-cli/src/main.rs` and `orkesy-cli/src/ui/`
+- **Documentation** — Improve README, add examples, or write guides
+- **Bug fixes** — Check open issues for reported bugs
+
+---
+
+## Support
+
+If you find Orkesy useful, consider supporting its development:
+
+<a href="https://buymeacoffee.com/uzairralii" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="40"></a>
 
 ---
 
