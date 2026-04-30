@@ -1,6 +1,8 @@
-# Orkesy
+<h1 align="center">Orkesy</h1>
 
-A terminal-based control plane for the services your project runs locally — APIs, workers, databases, build watchers — with one keyboard-driven view of status, logs, health, and resource use.
+<p align="center">
+  A terminal-based control plane for the services your project runs locally — APIs, workers, databases, build watchers — with one keyboard-driven view of status, logs, health, and resource use.
+</p>
 
 <p align="center">
   <a href="https://github.com/uzairali19/orkesy/actions/workflows/ci.yml"><img src="https://github.com/uzairali19/orkesy/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
