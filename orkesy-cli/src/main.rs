@@ -1,25 +1,36 @@
-// Suppress clippy warnings that require extensive refactoring
+// Suppress clippy lints that flag pre-existing patterns inside `tui_loop`.
+// These are tracked for the next refactor pass (extracting `tui_loop` into
+// per-view modules under `views/*`); fixing them in place inside a
+// 3000-line function carries real risk of behavioural drift, so we surface
+// them as suppressions rather than churn the code.
 #![allow(clippy::collapsible_if)]
+#![allow(clippy::collapsible_match)]
 #![allow(clippy::unnecessary_unwrap)]
 #![allow(clippy::manual_clamp)]
 #![allow(clippy::match_single_binding)]
 #![allow(clippy::type_complexity)]
 #![allow(clippy::too_many_arguments)]
+#![allow(clippy::unnecessary_sort_by)]
 
 mod adapters;
+mod app;
 mod commands;
 mod detectors;
 mod engines;
 mod health;
+mod input;
+mod log_history;
+mod render;
 mod runner;
 mod sampler;
 mod ui;
+mod views;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use crossterm::{
@@ -30,20 +41,19 @@ use crossterm::{
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     symbols,
     text::{Line, Span, Text},
     widgets::{
-        Axis, Block, Borders, Chart, Clear, Dataset, GraphType, List, ListItem, ListState,
-        Paragraph, Wrap,
+        Axis, Block, Borders, Chart, Dataset, GraphType, List, ListItem, ListState, Paragraph, Wrap,
     },
 };
 
 use tokio::sync::{RwLock, broadcast, mpsc};
 
 use orkesy_core::adapter::{Adapter, AdapterCommand, AdapterEvent, LogStream};
-use orkesy_core::config::OrkesyConfig;
+use orkesy_core::config::{self, Workspace};
 use orkesy_core::log_filter::{LogFilterMode, detect_level};
 use orkesy_core::model::*;
 use orkesy_core::reducer::*;
@@ -54,26 +64,13 @@ use adapters::ProcessAdapter;
 use engines::FakeEngine;
 use ui::styles;
 
-/// Format a SystemTime as HH:MM:SS for log display
-fn format_timestamp(time: SystemTime) -> String {
-    match time.duration_since(SystemTime::UNIX_EPOCH) {
-        Ok(duration) => {
-            let secs = duration.as_secs();
-            let hours = (secs / 3600) % 24;
-            let minutes = (secs / 60) % 60;
-            let seconds = secs % 60;
-            format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
-        }
-        Err(_) => "??:??:??".to_string(),
-    }
-}
-
-/// A log line with optional timestamp for display
-#[derive(Clone, Debug)]
-struct DisplayLogLine {
-    timestamp: Option<SystemTime>,
-    text: String,
-}
+use app::{Focus, InspectSection, LeftMode, UiState, View};
+use input::parse_command;
+use render::{
+    DisplayLogLine, fit_title, format_timestamp, health_icon, health_style, kind_icon, status_icon,
+    status_label, status_style,
+};
+use views::command_palette::{PickerItem, build_picker_items, filter_picker_items};
 
 #[derive(Parser)]
 #[command(name = "orkesy")]
@@ -86,6 +83,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     Init {
+        #[arg(short, long)]
+        yes: bool,
+    },
+    /// Migrate a legacy `services:` config to the canonical `units:` schema.
+    Migrate {
         #[arg(short, long)]
         yes: bool,
     },
@@ -107,6 +109,15 @@ enum Commands {
         unit: String,
         #[arg(short, long, default_value = "true")]
         follow: bool,
+        /// Read persisted history instead of tailing live. Accepts `15m`, `1h`, `24h`, `7d`.
+        #[arg(long, value_name = "DURATION")]
+        since: Option<String>,
+        /// Filter by detected level: `error`, `warn`, `all`. Default: `all`.
+        #[arg(long, default_value = "all")]
+        level: String,
+        /// Output format: `text` (default) or `json`.
+        #[arg(long, default_value = "text")]
+        format: String,
     },
     Install {
         units: Vec<String>,
@@ -159,23 +170,27 @@ fn demo_graph() -> RuntimeGraph {
     RuntimeGraph { nodes, edges }
 }
 
-fn try_load_config() -> Option<(PathBuf, OrkesyConfig)> {
+fn try_load_config() -> Option<(PathBuf, Workspace)> {
     let cwd = std::env::current_dir().ok()?;
-    let names = ["orkesy.yml", "orkesy.yaml", ".orkesy.yml", ".orkesy.yaml"];
-
-    for name in &names {
-        let path = cwd.join(name);
-        if path.exists() {
-            match OrkesyConfig::load(&path) {
-                Ok(config) => return Some((path, config)),
-                Err(e) => {
-                    eprintln!("Error loading {}: {}", path.display(), e);
-                    continue;
-                }
+    match config::discover_workspace(&cwd) {
+        Ok((path, ws)) => {
+            if ws.legacy {
+                eprintln!(
+                    "warning: {} uses the legacy `services:` schema. \
+                     Run `orkesy init` to migrate to `units:`.",
+                    path.display()
+                );
             }
+            Some((path, ws))
+        }
+        // `NotFound` is silent so demo mode can take over for first-time users
+        // without printing an error. Real parse/validation failures still log.
+        Err(config::ConfigError::NotFound { .. }) => None,
+        Err(other) => {
+            eprintln!("Error loading config: {other}");
+            None
         }
     }
-    None
 }
 
 fn units_to_graph(units: &[Unit], edges: &[orkesy_core::unit::UnitEdge]) -> RuntimeGraph {
@@ -315,614 +330,7 @@ fn restore_terminal(mut terminal: Terminal<CrosstermBackend<io::Stdout>>) -> io:
     Ok(())
 }
 
-fn status_label(s: &ServiceStatus) -> &'static str {
-    match s {
-        ServiceStatus::Unknown => "unknown",
-        ServiceStatus::Starting => "starting",
-        ServiceStatus::Running => "running",
-        ServiceStatus::Stopped => "stopped",
-        ServiceStatus::Exited { .. } => "exited",
-        ServiceStatus::Restarting => "restarting",
-        ServiceStatus::Errored { .. } => "error",
-    }
-}
-
-fn status_icon(s: &ServiceStatus) -> &'static str {
-    match s {
-        ServiceStatus::Unknown => "?",
-        ServiceStatus::Starting => "◐",
-        ServiceStatus::Running => "●",
-        ServiceStatus::Stopped => "○",
-        ServiceStatus::Exited { code: Some(0) } => "◌",
-        ServiceStatus::Exited { .. } => "✗",
-        ServiceStatus::Restarting => "↻",
-        ServiceStatus::Errored { .. } => "✗",
-    }
-}
-
-fn health_icon(h: &HealthStatus) -> &'static str {
-    match h {
-        HealthStatus::Unknown => " ",
-        HealthStatus::Healthy => "♥",
-        HealthStatus::Degraded { .. } => "♡",
-        HealthStatus::Unhealthy { .. } => "✗",
-    }
-}
-
-fn kind_icon(k: &ServiceKind) -> &'static str {
-    match k {
-        ServiceKind::HttpApi => "⚡",
-        ServiceKind::Worker => "⚙",
-        ServiceKind::Database => "◆",
-        ServiceKind::Cache => "⚡",
-        ServiceKind::Queue => "≡",
-        ServiceKind::Frontend => "◉",
-        ServiceKind::Generic => "•",
-    }
-}
-
-fn status_style(s: &ServiceStatus) -> Style {
-    match s {
-        ServiceStatus::Running => Style::default().fg(Color::Green),
-        ServiceStatus::Starting | ServiceStatus::Restarting => Style::default().fg(Color::Yellow),
-        ServiceStatus::Stopped => Style::default().fg(Color::DarkGray),
-        ServiceStatus::Errored { .. } => Style::default().fg(Color::Red),
-        ServiceStatus::Exited { code: Some(0) } => Style::default().fg(Color::DarkGray),
-        ServiceStatus::Exited { .. } => Style::default().fg(Color::Red),
-        ServiceStatus::Unknown => Style::default().fg(Color::DarkGray),
-    }
-}
-
-fn health_style(h: &HealthStatus) -> Style {
-    match h {
-        HealthStatus::Healthy => Style::default().fg(Color::Green),
-        HealthStatus::Degraded { .. } => Style::default().fg(Color::Yellow),
-        HealthStatus::Unhealthy { .. } => Style::default().fg(Color::Red),
-        HealthStatus::Unknown => Style::default(),
-    }
-}
-
-fn fit_title(s: &str, width: u16) -> String {
-    // width includes borders; keep safe margin
-    let max = width.saturating_sub(4) as usize;
-    if max == 0 {
-        return "".into();
-    }
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() <= max {
-        return s.to_string();
-    }
-    if max <= 1 {
-        return "…".into();
-    }
-    let mut out: String = chars.into_iter().take(max - 1).collect();
-    out.push('…');
-    out
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
-enum View {
-    #[default]
-    Logs,
-    Inspect,
-    Exec, // Commands explorer
-    Deps,
-    Metrics,
-}
-
-#[allow(dead_code)]
-impl View {
-    fn label(&self) -> &'static str {
-        match self {
-            View::Logs => "Logs",
-            View::Inspect => "Inspect",
-            View::Exec => "Exec",
-            View::Deps => "Deps",
-            View::Metrics => "Metrics",
-        }
-    }
-
-    fn key(&self) -> char {
-        match self {
-            View::Logs => 'l',
-            View::Inspect => 'i',
-            View::Exec => 'e',
-            View::Deps => 'd',
-            View::Metrics => 'm',
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-enum InspectSection {
-    #[default]
-    Summary,
-    Metrics,
-    Health,
-}
-
-impl InspectSection {
-    fn next(&self) -> Self {
-        match self {
-            InspectSection::Summary => InspectSection::Metrics,
-            InspectSection::Metrics => InspectSection::Health,
-            InspectSection::Health => InspectSection::Summary,
-        }
-    }
-
-    fn prev(&self) -> Self {
-        match self {
-            InspectSection::Summary => InspectSection::Health,
-            InspectSection::Metrics => InspectSection::Summary,
-            InspectSection::Health => InspectSection::Metrics,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-enum Focus {
-    #[default]
-    Units,
-    RightPane,
-    InspectPanel(InspectSection),
-    Palette,
-}
-
-#[allow(dead_code)]
-impl Focus {
-    fn toggle(&self) -> Self {
-        match self {
-            Focus::Units => Focus::RightPane,
-            Focus::RightPane => Focus::Units,
-            Focus::InspectPanel(_) => Focus::Units,
-            Focus::Palette => Focus::Palette,
-        }
-    }
-
-    fn is_right(&self) -> bool {
-        matches!(self, Focus::RightPane | Focus::InspectPanel(_))
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum PickerCategory {
-    ServiceAction,
-    ProjectAction,
-    DetectedCommand,
-    Navigation,
-}
-
-#[allow(dead_code)]
-impl PickerCategory {
-    fn label(&self) -> &'static str {
-        match self {
-            PickerCategory::ServiceAction => "Service Actions",
-            PickerCategory::ProjectAction => "Project Actions",
-            PickerCategory::DetectedCommand => "Commands",
-            PickerCategory::Navigation => "Navigation",
-        }
-    }
-
-    fn icon(&self) -> &'static str {
-        match self {
-            PickerCategory::ServiceAction => "●",
-            PickerCategory::ProjectAction => "◉",
-            PickerCategory::DetectedCommand => "▶",
-            PickerCategory::Navigation => "◇",
-        }
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Debug)]
-struct PickerItem {
-    label: String,
-    detail: Option<String>,
-    category: PickerCategory,
-    command: Option<String>,
-    target_view: Option<View>,
-    service_id: Option<String>,
-}
-
-#[allow(dead_code)]
-impl PickerItem {
-    fn new_service_action(
-        label: &str,
-        detail: Option<&str>,
-        command: &str,
-        service_id: &str,
-    ) -> Self {
-        Self {
-            label: label.to_string(),
-            detail: detail.map(|s| s.to_string()),
-            category: PickerCategory::ServiceAction,
-            command: Some(command.to_string()),
-            target_view: None,
-            service_id: Some(service_id.to_string()),
-        }
-    }
-
-    fn new_project_action(label: &str, detail: Option<&str>, command: &str) -> Self {
-        Self {
-            label: label.to_string(),
-            detail: detail.map(|s| s.to_string()),
-            category: PickerCategory::ProjectAction,
-            command: Some(command.to_string()),
-            target_view: None,
-            service_id: None,
-        }
-    }
-
-    fn new_detected_command(label: &str, command: &str, detail: Option<&str>) -> Self {
-        Self {
-            label: label.to_string(),
-            detail: detail.map(|s| s.to_string()),
-            category: PickerCategory::DetectedCommand,
-            command: Some(command.to_string()),
-            target_view: None,
-            service_id: None,
-        }
-    }
-
-    fn new_navigation(label: &str, view: View) -> Self {
-        Self {
-            label: label.to_string(),
-            detail: Some(format!("Press '{}' for quick access", view.key())),
-            category: PickerCategory::Navigation,
-            command: None,
-            target_view: Some(view),
-            service_id: None,
-        }
-    }
-
-    fn fuzzy_matches(&self, pattern: &str) -> bool {
-        if pattern.is_empty() {
-            return true;
-        }
-        let label_lower = self.label.to_lowercase();
-        let pattern_lower = pattern.to_lowercase();
-
-        let mut pattern_chars = pattern_lower.chars().peekable();
-        for c in label_lower.chars() {
-            if pattern_chars.peek() == Some(&c) {
-                pattern_chars.next();
-            }
-        }
-        pattern_chars.peek().is_none()
-    }
-
-    fn fuzzy_score(&self, pattern: &str) -> i32 {
-        if pattern.is_empty() {
-            return 0;
-        }
-        let label_lower = self.label.to_lowercase();
-        let pattern_lower = pattern.to_lowercase();
-
-        // Exact prefix match: highest score
-        if label_lower.starts_with(&pattern_lower) {
-            return 1000 - self.label.len() as i32;
-        }
-        // Contains match
-        if label_lower.contains(&pattern_lower) {
-            return 500 - self.label.len() as i32;
-        }
-        // Fuzzy match score
-        if self.fuzzy_matches(pattern) {
-            return 100 - self.label.len() as i32;
-        }
-        -1000
-    }
-}
-
-fn build_picker_items(
-    service_ids: &[String],
-    selected_service: Option<&str>,
-    _detected_commands: &[String], // For future: parsed from package.json etc.
-) -> Vec<PickerItem> {
-    let mut items = Vec::new();
-
-    // Service actions for selected service
-    if let Some(sid) = selected_service {
-        items.push(PickerItem::new_service_action(
-            &format!("Start {}", sid),
-            Some("Start the service"),
-            &format!("start {}", sid),
-            sid,
-        ));
-        items.push(PickerItem::new_service_action(
-            &format!("Stop {}", sid),
-            Some("Stop the service"),
-            &format!("stop {}", sid),
-            sid,
-        ));
-        items.push(PickerItem::new_service_action(
-            &format!("Restart {}", sid),
-            Some("Restart the service"),
-            &format!("restart {}", sid),
-            sid,
-        ));
-        items.push(PickerItem::new_service_action(
-            &format!("Kill {}", sid),
-            Some("Force kill the service"),
-            &format!("kill {}", sid),
-            sid,
-        ));
-        items.push(PickerItem::new_service_action(
-            &format!("Clear logs for {}", sid),
-            Some("Clear the log buffer"),
-            &format!("clear {}", sid),
-            sid,
-        ));
-    }
-
-    // Other service actions (not selected)
-    for id in service_ids {
-        if selected_service == Some(id.as_str()) {
-            continue; // Already added above
-        }
-        items.push(PickerItem::new_service_action(
-            &format!("Start {}", id),
-            None,
-            &format!("start {}", id),
-            id,
-        ));
-        items.push(PickerItem::new_service_action(
-            &format!("Stop {}", id),
-            None,
-            &format!("stop {}", id),
-            id,
-        ));
-        items.push(PickerItem::new_service_action(
-            &format!("Restart {}", id),
-            None,
-            &format!("restart {}", id),
-            id,
-        ));
-    }
-
-    // Project-wide actions
-    items.push(PickerItem::new_project_action(
-        "Start all services",
-        Some("Start all defined services"),
-        "start all",
-    ));
-    items.push(PickerItem::new_project_action(
-        "Stop all services",
-        Some("Stop all running services"),
-        "stop all",
-    ));
-    items.push(PickerItem::new_project_action(
-        "Restart all services",
-        Some("Restart all services"),
-        "restart all",
-    ));
-    items.push(PickerItem::new_project_action(
-        "Kill all services",
-        Some("Force kill all services"),
-        "kill all",
-    ));
-    items.push(PickerItem::new_project_action(
-        "Clear all logs",
-        Some("Clear log buffers for all services"),
-        "clear all",
-    ));
-
-    // Navigation actions
-    items.push(PickerItem::new_navigation("Open Logs view", View::Logs));
-    items.push(PickerItem::new_navigation(
-        "Open Inspect view",
-        View::Inspect,
-    ));
-    items.push(PickerItem::new_navigation("Open Exec view", View::Exec));
-    items.push(PickerItem::new_navigation(
-        "Open Dependencies view",
-        View::Deps,
-    ));
-    items.push(PickerItem::new_navigation(
-        "Open Metrics view",
-        View::Metrics,
-    ));
-
-    items
-}
-
-fn filter_picker_items(items: &[PickerItem], query: &str) -> Vec<PickerItem> {
-    if query.is_empty() {
-        // Return all items, grouped by category
-        let mut result = items.to_vec();
-        result.sort_by(|a, b| {
-            // Sort by category order, then by label
-            let cat_order = |c: &PickerCategory| match c {
-                PickerCategory::ServiceAction => 0,
-                PickerCategory::ProjectAction => 1,
-                PickerCategory::DetectedCommand => 2,
-                PickerCategory::Navigation => 3,
-            };
-            cat_order(&a.category)
-                .cmp(&cat_order(&b.category))
-                .then_with(|| a.label.cmp(&b.label))
-        });
-        return result;
-    }
-
-    // Filter by fuzzy match and sort by score
-    let mut filtered: Vec<(PickerItem, i32)> = items
-        .iter()
-        .filter(|item| item.fuzzy_matches(query))
-        .map(|item| (item.clone(), item.fuzzy_score(query)))
-        .collect();
-
-    filtered.sort_by(|a, b| b.1.cmp(&a.1));
-    filtered.into_iter().map(|(item, _)| item).collect()
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-enum LeftMode {
-    #[default]
-    Services,
-    Commands,
-    Runs,
-}
-
-impl LeftMode {
-    fn label(&self) -> &'static str {
-        match self {
-            LeftMode::Services => "Units",
-            LeftMode::Commands => "Commands",
-            LeftMode::Runs => "Runs",
-        }
-    }
-
-    fn key(&self) -> char {
-        match self {
-            LeftMode::Services => '1',
-            LeftMode::Commands => '2',
-            LeftMode::Runs => '3',
-        }
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-struct LogsUiState {
-    follow: bool,
-    paused: bool,
-    scroll: usize,
-    search: Option<String>,
-    matches: Vec<usize>,
-    match_idx: usize,
-    frozen_logs: Vec<DisplayLogLine>,
-    log_filter: LogFilterMode,
-}
-
-impl LogsUiState {
-    fn new() -> Self {
-        Self {
-            follow: true,
-            ..Default::default()
-        }
-    }
-
-    fn is_searching(&self) -> bool {
-        self.search.is_some()
-    }
-
-    fn enter_search(&mut self) {
-        self.search = Some(String::new());
-        self.matches.clear();
-        self.match_idx = 0;
-    }
-
-    fn exit_search(&mut self) {
-        self.search = None;
-        self.matches.clear();
-        self.match_idx = 0;
-    }
-
-    fn toggle_follow(&mut self) {
-        self.follow = !self.follow;
-        if self.follow {
-            self.scroll = 0;
-        }
-    }
-
-    fn scroll_up(&mut self, lines: usize) {
-        self.follow = false;
-        self.scroll = self.scroll.saturating_add(lines);
-    }
-
-    fn scroll_down(&mut self, lines: usize) {
-        self.scroll = self.scroll.saturating_sub(lines);
-        if self.scroll == 0 {
-            self.follow = true;
-        }
-    }
-
-    fn next_match(&mut self) {
-        if !self.matches.is_empty() {
-            self.match_idx = (self.match_idx + 1) % self.matches.len();
-        }
-    }
-
-    fn prev_match(&mut self) {
-        if !self.matches.is_empty() {
-            self.match_idx = if self.match_idx == 0 {
-                self.matches.len() - 1
-            } else {
-                self.match_idx - 1
-            };
-        }
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Debug)]
-struct UiState {
-    focus: Focus,
-    view: View,
-    left_mode: LeftMode,
-    selected_command: usize,
-    selected_run: usize,
-    logs: LogsUiState,
-    inspect_scroll: usize,
-    deps_scroll: usize,
-    palette_open: bool,
-    palette_input: String,
-    palette_error: Option<String>,
-    palette_pick: usize,
-    palette_scroll: usize,
-    palette_sugg_offset: usize,
-    help_open: bool,
-    metrics_paused: bool,
-    history: Vec<String>,
-    history_cursor: Option<usize>,
-}
-
-impl Default for UiState {
-    fn default() -> Self {
-        Self {
-            focus: Focus::Units,
-            view: View::Logs,
-            left_mode: LeftMode::Services,
-            selected_command: 0,
-            selected_run: 0,
-            logs: LogsUiState::new(),
-            inspect_scroll: 0,
-            deps_scroll: 0,
-            palette_open: false,
-            palette_input: String::new(),
-            palette_error: None,
-            palette_pick: 0,
-            palette_scroll: 0,
-            palette_sugg_offset: 0,
-            help_open: false,
-            metrics_paused: false,
-            history: Vec::new(),
-            history_cursor: None,
-        }
-    }
-}
-
-impl UiState {
-    fn scroll_offset(&self) -> usize {
-        self.logs.scroll
-    }
-
-    fn is_following(&self) -> bool {
-        self.logs.follow
-    }
-
-    fn enter_follow(&mut self) {
-        self.logs.follow = true;
-        self.logs.scroll = 0;
-    }
-
-    fn search_query(&self) -> Option<&str> {
-        self.logs.search.as_deref()
-    }
-}
-
-enum RuntimeBackend {
+pub enum RuntimeBackend {
     Adapter {
         cmd_tx: mpsc::Sender<AdapterCommand>,
     },
@@ -1033,12 +441,12 @@ enum CliAction {
 }
 
 async fn run_cli_command(action: CliAction, unit_args: Vec<String>) -> io::Result<()> {
-    let Some((path, config)) = try_load_config() else {
+    let Some((path, workspace)) = try_load_config() else {
         eprintln!("Error: No orkesy.yml found. Run `orkesy init` first.");
         std::process::exit(1);
     };
 
-    let units = config.to_units();
+    let units = workspace.units;
     let unit_ids: Vec<String> = units.iter().map(|u| u.id.clone()).collect();
 
     // Expand "all" to all unit IDs
@@ -1167,13 +575,108 @@ async fn run_cli_command(action: CliAction, unit_args: Vec<String>) -> io::Resul
     Ok(())
 }
 
-async fn run_cli_logs(unit_id: &str, follow: bool) -> io::Result<()> {
-    let Some((path, config)) = try_load_config() else {
+// Synchronous: this is a one-shot CLI path, not the live event loop.
+fn run_cli_history(
+    unit_id: &str,
+    since: Option<&str>,
+    level: &str,
+    format: &str,
+) -> io::Result<()> {
+    let Some((path, _workspace)) = try_load_config() else {
         eprintln!("Error: No orkesy.yml found. Run `orkesy init` first.");
         std::process::exit(1);
     };
 
-    let units = config.to_units();
+    let level_filter = match log_history::LevelFilter::parse(level) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let from = match since {
+        Some(s) => match log_history::parse_duration(s) {
+            Ok(secs) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs_f64())
+                    .unwrap_or(0.0);
+                Some(now - secs as f64)
+            }
+            Err(e) => {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        },
+        None => None,
+    };
+
+    let project_root = path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+    let unit_filter = if unit_id == "all" {
+        None
+    } else {
+        Some(unit_id.to_string())
+    };
+
+    let query = log_history::ReadQuery {
+        unit: unit_filter,
+        from,
+        to: None,
+        level: level_filter,
+    };
+
+    let records = match log_history::read_history(&project_root, &query) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Error reading history: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if records.is_empty() {
+        eprintln!(
+            "(no records — log_history may be disabled in {} or no matching events yet)",
+            path.display()
+        );
+        return Ok(());
+    }
+
+    match format {
+        "json" => {
+            for rec in &records {
+                if let Ok(s) = serde_json::to_string(&serde_json::json!({
+                    "t": rec.t,
+                    "u": rec.unit,
+                    "s": rec.stream,
+                    "l": rec.level,
+                    "m": rec.message,
+                })) {
+                    println!("{s}");
+                }
+            }
+        }
+        _ => {
+            for rec in &records {
+                println!("{}", log_history::format_text(rec));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_cli_logs(unit_id: &str, follow: bool) -> io::Result<()> {
+    let Some((path, workspace)) = try_load_config() else {
+        eprintln!("Error: No orkesy.yml found. Run `orkesy init` first.");
+        std::process::exit(1);
+    };
+
+    let units = workspace.units;
     let unit_ids: Vec<String> = units.iter().map(|u| u.id.clone()).collect();
 
     if !unit_ids.contains(&unit_id.to_string()) {
@@ -1252,12 +755,12 @@ async fn run_cli_logs(unit_id: &str, follow: bool) -> io::Result<()> {
 }
 
 async fn run_cli_exec(unit_id: &str, cmd: Vec<String>) -> io::Result<()> {
-    let Some((_path, config)) = try_load_config() else {
+    let Some((_path, workspace)) = try_load_config() else {
         eprintln!("Error: No orkesy.yml found. Run `orkesy init` first.");
         std::process::exit(1);
     };
 
-    let units = config.to_units();
+    let units = workspace.units;
     let unit = units.iter().find(|u| u.id == unit_id);
 
     let Some(unit) = unit else {
@@ -1305,6 +808,13 @@ async fn main() -> io::Result<()> {
                 std::process::exit(1);
             }
         },
+        Some(Commands::Migrate { yes }) => match commands::run_migrate(yes) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        },
         Some(Commands::Doctor) => match commands::run_doctor() {
             Ok(()) => return Ok(()),
             Err(e) => {
@@ -1321,7 +831,17 @@ async fn main() -> io::Result<()> {
         Some(Commands::Restart { units }) => {
             return run_cli_command(CliAction::Restart, units).await;
         }
-        Some(Commands::Logs { unit, follow }) => {
+        Some(Commands::Logs {
+            unit,
+            follow,
+            since,
+            level,
+            format,
+        }) => {
+            // Reading history when --since is set; otherwise tail live logs.
+            if since.is_some() {
+                return run_cli_history(&unit, since.as_deref(), &level, &format);
+            }
             return run_cli_logs(&unit, follow).await;
         }
         Some(Commands::Install { units }) => {
@@ -1354,16 +874,32 @@ async fn run_tui() -> io::Result<()> {
         BTreeMap<String, Unit>,
         String,
     ) = match try_load_config() {
-        Some((path, config)) => {
+        Some((path, workspace)) => {
             eprintln!("Loaded config from: {}", path.display());
-            let proj_name = config
-                .project_name()
-                .map(|s| s.to_string())
+            let proj_name = workspace
+                .project_name
+                .clone()
                 .unwrap_or_else(|| "orkesy".to_string());
 
-            // Get units and edges from config
-            let units = config.to_units();
-            let edges = config.to_edges();
+            if workspace.log_history.enabled {
+                let project_root = path
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+                eprintln!(
+                    "log_history: enabled — writing to {}",
+                    log_history::project_dir(&project_root).display()
+                );
+                log_history::spawn_writer(
+                    &workspace.log_history,
+                    project_root,
+                    workspace.project_name.clone(),
+                    event_tx.subscribe(),
+                );
+            }
+
+            let units = workspace.units;
+            let edges = workspace.edges;
             let graph = units_to_graph(&units, &edges);
 
             // Store units by ID for Inspect view
@@ -1528,112 +1064,6 @@ async fn run_tui() -> io::Result<()> {
     .await;
     restore_terminal(terminal)?;
     res
-}
-
-#[derive(Clone, Debug)]
-enum TuiCommand {
-    Start { id: String },
-    Stop { id: String },
-    Restart { id: String },
-    Kill { id: String },
-    Toggle { id: String },
-    ClearLogs { id: String },
-    Exec { id: String, cmd: Vec<String> },
-}
-
-impl TuiCommand {
-    async fn execute(self, backend: &RuntimeBackend) {
-        match self {
-            TuiCommand::Start { id } => backend.send_start(id).await,
-            TuiCommand::Stop { id } => backend.send_stop(id).await,
-            TuiCommand::Restart { id } => backend.send_restart(id).await,
-            TuiCommand::Kill { id } => backend.send_kill(id).await,
-            TuiCommand::Toggle { id } => backend.send_toggle(id).await,
-            TuiCommand::ClearLogs { id } => backend.send_clear_logs(id).await,
-            TuiCommand::Exec { id, cmd } => backend.send_exec(id, cmd).await,
-        }
-    }
-}
-
-fn parse_command(input: &str, service_ids: &[String]) -> Result<Vec<TuiCommand>, String> {
-    let parts: Vec<&str> = input.split_whitespace().collect();
-    if parts.is_empty() {
-        return Err("Empty command".into());
-    }
-
-    let cmd = parts[0].to_lowercase();
-    let arg1 = parts.get(1).copied();
-
-    let exists = |id: &str| service_ids.iter().any(|s| s == id);
-
-    let expand_ids = |arg: Option<&str>| -> Result<Vec<String>, String> {
-        match arg {
-            Some("all") => Ok(service_ids.to_vec()),
-            Some(id) if exists(id) => Ok(vec![id.to_string()]),
-            Some(id) => Err(format!("Unknown service: {id}")),
-            None => Err("Missing target (service id or 'all')".into()),
-        }
-    };
-
-    match cmd.as_str() {
-        // Aliases for common operations
-        "up" | "start" => Ok(expand_ids(arg1)?
-            .into_iter()
-            .map(|id| TuiCommand::Start { id })
-            .collect()),
-
-        "down" | "stop" => Ok(expand_ids(arg1)?
-            .into_iter()
-            .map(|id| TuiCommand::Stop { id })
-            .collect()),
-
-        "restart" | "rs" => Ok(expand_ids(arg1)?
-            .into_iter()
-            .map(|id| TuiCommand::Restart { id })
-            .collect()),
-
-        "toggle" => Ok(expand_ids(arg1)?
-            .into_iter()
-            .map(|id| TuiCommand::Toggle { id })
-            .collect()),
-
-        "kill" | "k" => Ok(expand_ids(arg1)?
-            .into_iter()
-            .map(|id| TuiCommand::Kill { id })
-            .collect()),
-
-        "clear" | "cl" => {
-            // clear <service|all> or clear logs <service|all>
-            let target = if arg1 == Some("logs") {
-                parts.get(2).copied().unwrap_or("all")
-            } else {
-                arg1.unwrap_or("all")
-            };
-            Ok(expand_ids(Some(target))?
-                .into_iter()
-                .map(|id| TuiCommand::ClearLogs { id })
-                .collect())
-        }
-
-        "exec" | "run" => {
-            let svc = arg1.ok_or("Usage: exec <service> <cmd...>")?;
-            if !exists(svc) {
-                return Err(format!("Unknown service: {svc}"));
-            }
-            let cmd_parts = parts.get(2..).unwrap_or(&[]);
-            if cmd_parts.is_empty() {
-                return Err("Usage: exec <service> <cmd...>".into());
-            }
-            Ok(vec![TuiCommand::Exec {
-                id: svc.to_string(),
-                cmd: cmd_parts.iter().map(|s| s.to_string()).collect(),
-            }])
-        }
-
-        _ => Err(format!(
-            "Unknown command: {cmd}\nTry: up/down/restart/toggle/kill/clear/exec"
-        )),
-    }
 }
 
 async fn tui_loop(
@@ -2927,53 +2357,7 @@ async fn tui_loop(
                 .constraints([Constraint::Percentage(20), Constraint::Percentage(80)])
                 .split(outer[1]);
 
-            // ---------------- Top Status Bar ----------------
-            // Calculate aggregate metrics
-            let total_cpu: f64 = snapshot
-                .metrics
-                .values()
-                .map(|m| m.cpu_percent as f64)
-                .sum();
-            let total_mem: u64 = snapshot.metrics.values().map(|m| m.memory_bytes).sum();
-
-            // Calculate uptime (time since start)
-            let uptime_secs = start_time.elapsed().as_secs();
-            let uptime_mins = uptime_secs / 60;
-            let uptime_hrs = uptime_mins / 60;
-            let uptime_str = format!(
-                "{:02}:{:02}:{:02}",
-                uptime_hrs,
-                uptime_mins % 60,
-                uptime_secs % 60
-            );
-
-            let running_count = snapshot
-                .graph
-                .nodes
-                .values()
-                .filter(|n| n.observed.status == ServiceStatus::Running)
-                .count();
-            let total_services = snapshot.graph.nodes.len();
-
-            let top_bar = Line::from(vec![
-                Span::styled(" Orkesy ", styles::accent_bold()),
-                Span::styled(project_name, styles::text()),
-                Span::raw("  "),
-                Span::styled(
-                    format!("{}/{} running", running_count, total_services),
-                    styles::success(),
-                ),
-                Span::raw("    "),
-                Span::styled(format!("CPU {:.0}%", total_cpu), styles::warn()),
-                Span::raw("  "),
-                Span::styled(
-                    format!("MEM {}", adapters::format_bytes(total_mem)),
-                    styles::warn(),
-                ),
-                Span::raw("  "),
-                Span::styled(format!("⏱ {}", uptime_str), styles::text_muted()),
-            ]);
-            f.render_widget(Paragraph::new(top_bar), outer[0]);
+            views::status_bar::draw(f, outer[0], &snapshot, start_time, project_name);
 
             // ---------------- Left: Mode-aware pane ----------------
             let left_focused = ui.focus == Focus::Units;
@@ -3688,434 +3072,24 @@ async fn tui_loop(
                 f.render_widget(right, main[1]);
             }
 
-            // ---------------- Footer (always visible, context-sensitive) ----------------
-            // Build footer: l Logs  i Inspect  d Deps  m Metrics  |  context hints  |  / cmd  q quit
-            let view_tabs = vec![
-                Span::styled("l", styles::key_hint()),
-                Span::styled(
-                    " Logs  ",
-                    if ui.view == View::Logs {
-                        styles::accent()
-                    } else {
-                        styles::text_dim()
-                    },
-                ),
-                Span::styled("i", styles::key_hint()),
-                Span::styled(
-                    " Inspect  ",
-                    if ui.view == View::Inspect {
-                        styles::accent()
-                    } else {
-                        styles::text_dim()
-                    },
-                ),
-                Span::styled("d", styles::key_hint()),
-                Span::styled(
-                    " Deps  ",
-                    if ui.view == View::Deps {
-                        styles::accent()
-                    } else {
-                        styles::text_dim()
-                    },
-                ),
-                Span::styled("m", styles::key_hint()),
-                Span::styled(
-                    " Metrics",
-                    if ui.view == View::Metrics {
-                        styles::accent()
-                    } else {
-                        styles::text_dim()
-                    },
-                ),
-                Span::styled("  |  ", styles::text_muted()),
-            ];
+            views::footer::draw(f, outer[2], &ui);
 
-            // Context-sensitive hints based on focus + view (keys in key_hint, labels in text_dim)
-            let context_hints: Vec<Span> = match (ui.focus, ui.view) {
-                (Focus::Palette, _) => vec![
-                    Span::styled("↑↓", styles::key_hint()),
-                    Span::styled(" select  ", styles::text_dim()),
-                    Span::styled("Enter", styles::key_hint()),
-                    Span::styled(" run  ", styles::text_dim()),
-                    Span::styled("Esc", styles::key_hint()),
-                    Span::styled(" close", styles::text_dim()),
-                ],
-                (Focus::Units, _) => vec![
-                    Span::styled("↑↓", styles::key_hint()),
-                    Span::styled(" select  ", styles::text_dim()),
-                    Span::styled("r", styles::key_hint()),
-                    Span::styled(" restart  ", styles::text_dim()),
-                    Span::styled("s", styles::key_hint()),
-                    Span::styled(" stop  ", styles::text_dim()),
-                    Span::styled("t", styles::key_hint()),
-                    Span::styled(" start", styles::text_dim()),
-                ],
-                (Focus::RightPane, View::Logs) if ui.logs.is_searching() => vec![
-                    Span::styled("n/N", styles::key_hint()),
-                    Span::styled(" match  ", styles::text_dim()),
-                    Span::styled("Esc", styles::key_hint()),
-                    Span::styled(" clear", styles::text_dim()),
-                ],
-                (Focus::RightPane, View::Logs) if ui.logs.paused => vec![
-                    Span::styled("Space", styles::key_hint()),
-                    Span::styled(" resume  ", styles::text_dim()),
-                    Span::styled("↑↓", styles::key_hint()),
-                    Span::styled(" scroll", styles::text_dim()),
-                ],
-                (Focus::RightPane, View::Logs) => {
-                    let filter_label = ui.logs.log_filter.label();
-                    let filter_style = if ui.logs.log_filter == LogFilterMode::All {
-                        styles::text_dim()
-                    } else {
-                        styles::warn()
-                    };
-                    vec![
-                        Span::styled("Space", styles::key_hint()),
-                        Span::styled(" pause  ", styles::text_dim()),
-                        Span::styled("f", styles::key_hint()),
-                        Span::styled(" follow  ", styles::text_dim()),
-                        Span::styled("s", styles::key_hint()),
-                        Span::styled(" search  ", styles::text_dim()),
-                        Span::styled("e/w/a", styles::key_hint()),
-                        Span::styled(" filter  ", styles::text_dim()),
-                        Span::styled(format!("[{}]", filter_label), filter_style),
-                    ]
-                }
-                (Focus::RightPane, View::Metrics) => {
-                    if ui.metrics_paused {
-                        vec![
-                            Span::styled("p", styles::key_hint()),
-                            Span::styled(" resume  ", styles::text_dim()),
-                            Span::styled("[PAUSED]", styles::warn()),
-                        ]
-                    } else {
-                        vec![
-                            Span::styled("p", styles::key_hint()),
-                            Span::styled(" pause", styles::text_dim()),
-                        ]
-                    }
-                }
-                (Focus::InspectPanel(section), _) => {
-                    let section_name = match section {
-                        InspectSection::Summary => "Summary",
-                        InspectSection::Metrics => "Metrics",
-                        InspectSection::Health => "Health",
-                    };
-                    vec![
-                        Span::styled("Tab", styles::key_hint()),
-                        Span::styled(" section  ", styles::text_dim()),
-                        Span::styled(format!("[{}]", section_name), styles::accent()),
-                    ]
-                }
-                (Focus::RightPane, _) => vec![
-                    Span::styled("↑↓", styles::key_hint()),
-                    Span::styled(" scroll", styles::text_dim()),
-                ],
-            };
-
-            // Global hints (keys in key_hint, labels in text_dim)
-            let global_hints: Vec<Span> = vec![
-                Span::styled("  Tab", styles::key_hint()),
-                Span::styled(" focus  ", styles::text_dim()),
-                Span::styled("/", styles::key_hint()),
-                Span::styled(" cmd  ", styles::text_dim()),
-                Span::styled("?", styles::key_hint()),
-                Span::styled(" help  ", styles::text_dim()),
-                Span::styled("q", styles::key_hint()),
-                Span::styled(" quit", styles::text_dim()),
-            ];
-
-            // Combine all footer spans
-            let mut footer_spans: Vec<Span> = view_tabs;
-            footer_spans.extend(context_hints);
-            footer_spans.extend(global_hints);
-
-            f.render_widget(Paragraph::new(Line::from(footer_spans)), outer[2]);
-
-            // ---------------- VS Code Style Command Picker Modal ----------------
             if ui.palette_open {
-                // Centered modal - 60% width, max 50 chars, vertically centered
-                let modal_width = (area.width * 60 / 100).min(60).max(30);
-                let modal_height = (picker_items.len() as u16 + 4).min(area.height - 4).max(6);
-                let modal_x = (area.width.saturating_sub(modal_width)) / 2;
-                let modal_y = (area.height.saturating_sub(modal_height)) / 2;
-
-                let modal_rect = Rect {
-                    x: modal_x,
-                    y: modal_y,
-                    width: modal_width,
-                    height: modal_height,
-                };
-
-                // Clear background and draw modal
-                f.render_widget(Clear, modal_rect);
-
-                let block = Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(styles::border_focused())
-                    .title(" Commands ");
-
-                let inner = block.inner(modal_rect);
-                f.render_widget(block, modal_rect);
-
-                // Layout: input line at top, then items
-                let modal_parts = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(1), Constraint::Min(1)])
-                    .split(inner);
-
-                // Input line with > prompt
-                let input_area = modal_parts[0];
-                let prompt = "> ";
-                let max_input_chars =
-                    input_area.width.saturating_sub(prompt.len() as u16 + 1) as usize;
-
-                let input_display: String = if ui.palette_input.len() > max_input_chars {
-                    ui.palette_input.chars().take(max_input_chars).collect()
-                } else {
-                    ui.palette_input.clone()
-                };
-
-                let input_line = Line::from(vec![
-                    Span::styled(prompt, styles::accent()),
-                    Span::styled(&input_display, styles::text()),
-                ]);
-                f.render_widget(Paragraph::new(input_line), input_area);
-
-                // Items list
-                let items_area = modal_parts[1];
-                let visible_count = items_area.height as usize;
-
-                // Adjust scroll offset to keep selection visible
-                if ui.palette_pick < ui.palette_sugg_offset {
-                    ui.palette_sugg_offset = ui.palette_pick;
-                } else if visible_count > 0
-                    && ui.palette_pick >= ui.palette_sugg_offset + visible_count
-                {
-                    ui.palette_sugg_offset = ui.palette_pick.saturating_sub(visible_count - 1);
-                }
-
-                // Build list items with category grouping
-                let mut list_items: Vec<ListItem> = vec![];
-                let mut last_category: Option<PickerCategory> = None;
-
-                for (i, item) in picker_items
-                    .iter()
-                    .skip(ui.palette_sugg_offset)
-                    .take(visible_count)
-                    .enumerate()
-                {
-                    let actual_idx = ui.palette_sugg_offset + i;
-                    let is_selected = actual_idx == ui.palette_pick;
-
-                    // Category header (only when not filtering and category changes)
-                    if ui.palette_input.is_empty() && last_category.as_ref() != Some(&item.category)
-                    {
-                        if last_category.is_some() && list_items.len() < visible_count {
-                            // Add separator line between categories
-                            list_items.push(ListItem::new(Line::from("")));
-                        }
-                        last_category = Some(item.category.clone());
-                    }
-
-                    // Build item line
-                    let icon = item.category.icon();
-                    let prefix = if is_selected { "▸ " } else { "  " };
-
-                    let item_style = if is_selected {
-                        styles::selection()
-                    } else {
-                        styles::text()
-                    };
-
-                    let mut spans = vec![
-                        Span::raw(prefix),
-                        Span::styled(format!("{} ", icon), styles::text_muted()),
-                        Span::styled(&item.label, item_style),
-                    ];
-
-                    // Add detail if present and space allows
-                    if let Some(detail) = &item.detail {
-                        let remaining = modal_width.saturating_sub(
-                            prefix.len() as u16 + icon.len() as u16 + item.label.len() as u16 + 6,
-                        );
-                        if remaining > 10 {
-                            let truncated_detail: String =
-                                detail.chars().take(remaining as usize).collect();
-                            spans.push(Span::styled(
-                                format!("  {}", truncated_detail),
-                                styles::text_dim(),
-                            ));
-                        }
-                    }
-
-                    list_items.push(ListItem::new(Line::from(spans)));
-                }
-
-                if list_items.is_empty() {
-                    list_items.push(ListItem::new(Line::from(vec![Span::styled(
-                        "  No matching commands",
-                        styles::text_muted(),
-                    )])));
-                }
-
-                f.render_widget(List::new(list_items), items_area);
-
-                // Position cursor at end of input
-                let cursor_x = input_area.x + prompt.len() as u16 + input_display.len() as u16;
-                let cursor_y = input_area.y;
-                f.set_cursor_position((cursor_x, cursor_y));
+                views::command_palette::draw_modal(f, area, &mut ui, &picker_items);
             }
 
-            // ---------------- Search Bar (when in search mode) ----------------
             if let Some(query) = &ui.logs.search {
-                let search_h = 3u16;
-                let search_rect = Rect {
-                    x: main[1].x,
-                    width: main[1].width,
-                    height: search_h,
-                    y: main[1].y + main[1].height.saturating_sub(search_h),
-                };
-
-                f.render_widget(Clear, search_rect);
-
-                let match_info = if ui.logs.matches.is_empty() {
-                    if query.is_empty() {
-                        String::new()
-                    } else {
-                        " (no matches)".to_string()
-                    }
-                } else {
-                    format!(" ({}/{})", ui.logs.match_idx + 1, ui.logs.matches.len())
-                };
-
-                let title = format!(" Search{} ", match_info);
-                let block = Block::default()
-                    .title(title)
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Yellow));
-
-                let search_text = format!("/{}", query);
-                f.render_widget(Paragraph::new(search_text).block(block), search_rect);
-
-                let cursor_x = search_rect.x + 2 + query.len() as u16;
-                let cursor_y = search_rect.y + 1;
-                f.set_cursor_position((cursor_x, cursor_y));
+                views::search_bar::draw(
+                    f,
+                    main[1],
+                    query,
+                    ui.logs.match_idx,
+                    ui.logs.matches.len(),
+                );
             }
 
-            // ---------------- Help Overlay ----------------
             if ui.help_open {
-                // Centered modal
-                let help_width = 50u16.min(area.width - 4);
-                let help_height = 24u16.min(area.height - 4);
-                let help_x = (area.width.saturating_sub(help_width)) / 2;
-                let help_y = (area.height.saturating_sub(help_height)) / 2;
-
-                let help_rect = Rect {
-                    x: help_x,
-                    y: help_y,
-                    width: help_width,
-                    height: help_height,
-                };
-
-                f.render_widget(Clear, help_rect);
-
-                let block = Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(styles::border_focused())
-                    .title(" Help - Press ? or Esc to close ");
-
-                let inner = block.inner(help_rect);
-                f.render_widget(block, help_rect);
-
-                let help_lines = vec![
-                    Line::from(vec![Span::styled("VIEWS", styles::section_header())]),
-                    Line::from(vec![
-                        Span::styled("  l ", styles::key_hint()),
-                        Span::styled("Logs view", styles::text()),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("  i ", styles::key_hint()),
-                        Span::styled("Inspect view", styles::text()),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("  e ", styles::key_hint()),
-                        Span::styled("Exec (commands) view", styles::text()),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("  d ", styles::key_hint()),
-                        Span::styled("Dependencies view", styles::text()),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("  m ", styles::key_hint()),
-                        Span::styled("Metrics view", styles::text()),
-                    ]),
-                    Line::from(""),
-                    Line::from(vec![Span::styled(
-                        "FOCUS & NAVIGATION",
-                        styles::section_header(),
-                    )]),
-                    Line::from(vec![
-                        Span::styled("  Tab ", styles::key_hint()),
-                        Span::styled("Switch focus (Services ↔ Right)", styles::text()),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("  j/k ↑↓ ", styles::key_hint()),
-                        Span::styled("Move selection / scroll", styles::text()),
-                    ]),
-                    Line::from(""),
-                    Line::from(vec![Span::styled(
-                        "SERVICE ACTIONS",
-                        styles::section_header(),
-                    )]),
-                    Line::from(vec![
-                        Span::styled("  Enter ", styles::key_hint()),
-                        Span::styled("Toggle service (start/stop)", styles::text()),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("  r     ", styles::key_hint()),
-                        Span::styled("Restart service", styles::text()),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("  s     ", styles::key_hint()),
-                        Span::styled("Stop service", styles::text()),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("  t     ", styles::key_hint()),
-                        Span::styled("Start service", styles::text()),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("  x     ", styles::key_hint()),
-                        Span::styled("Kill service", styles::text()),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("  c     ", styles::key_hint()),
-                        Span::styled("Clear logs", styles::text()),
-                    ]),
-                    Line::from(""),
-                    Line::from(vec![Span::styled(
-                        "COMMANDS & SEARCH",
-                        styles::section_header(),
-                    )]),
-                    Line::from(vec![
-                        Span::styled("  /     ", styles::key_hint()),
-                        Span::styled("Open command picker", styles::text()),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("  s     ", styles::key_hint()),
-                        Span::styled("Search logs (in Logs view)", styles::text()),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("  ?     ", styles::key_hint()),
-                        Span::styled("Toggle this help", styles::text()),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("  q     ", styles::key_hint()),
-                        Span::styled("Quit Orkesy", styles::text()),
-                    ]),
-                ];
-
-                f.render_widget(Paragraph::new(help_lines), inner);
+                views::help::draw(f, area);
             }
         })?;
 
