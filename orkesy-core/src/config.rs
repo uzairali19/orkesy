@@ -108,35 +108,81 @@ pub struct OrkesyConfig {
 pub enum ConfigError {
     Io(std::io::Error),
     Yaml(serde_yaml::Error),
-    InvalidDependency { service: String, dependency: String },
-    MissingCommand { service: String },
-    CyclicDependency { cycle: Vec<String> },
-    NotFound { searched: Vec<PathBuf> },
+    UnknownUnit {
+        referrer: String,
+        referenced: String,
+    },
+    // Kept for the legacy `services:` schema's depends_on validation.
+    InvalidDependency {
+        service: String,
+        dependency: String,
+    },
+    MissingCommand {
+        service: String,
+    },
+    CyclicDependency {
+        cycle: Vec<String>,
+    },
+    NotFound {
+        searched: Vec<PathBuf>,
+    },
+    UnknownSchema {
+        hint: String,
+    },
 }
 
 impl std::fmt::Display for ConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Io(e) => write!(f, "IO error: {}", e),
+            Self::Io(e) => write!(f, "I/O error reading config: {}", e),
             Self::Yaml(e) => write!(f, "YAML parse error: {}", e),
+            Self::UnknownUnit {
+                referrer,
+                referenced,
+            } => {
+                write!(
+                    f,
+                    "edge from '{referrer}' references undeclared unit '{referenced}' (add it under `units:` or remove the edge)"
+                )
+            }
             Self::InvalidDependency {
                 service,
                 dependency,
             } => {
                 write!(
                     f,
-                    "service '{}' depends on unknown service '{}'",
-                    service, dependency
+                    "unit '{service}' depends on undeclared unit '{dependency}' (add it under `units:` or remove the dependency)"
                 )
             }
             Self::MissingCommand { service } => {
-                write!(f, "service '{}' has no command specified", service)
+                write!(
+                    f,
+                    "unit '{service}' has no `start` command — every unit must declare how to start"
+                )
             }
             Self::CyclicDependency { cycle } => {
-                write!(f, "cyclic dependency detected: {}", cycle.join(" -> "))
+                write!(
+                    f,
+                    "cyclic dependency: {} (edges form a loop; break one of them)",
+                    cycle.join(" → ")
+                )
             }
             Self::NotFound { searched } => {
-                write!(f, "no config file found, searched: {:?}", searched)
+                let lines: Vec<String> = searched
+                    .iter()
+                    .map(|p| format!("  - {}", p.display()))
+                    .collect();
+                write!(
+                    f,
+                    "no orkesy.yml found. Searched:\n{}\n(run `orkesy init` to generate one)",
+                    lines.join("\n")
+                )
+            }
+            Self::UnknownSchema { hint } => {
+                write!(
+                    f,
+                    "config file has neither `units:` nor `services:` at the top level: {hint}"
+                )
             }
         }
     }
@@ -422,6 +468,251 @@ impl OrkesyConfig {
     }
 }
 
+// `units:` is the canonical schema; `OrkesyConfig` above is the legacy
+// `services:` form, kept for backwards compatibility. Both converge on
+// `Workspace` before reaching the runtime.
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ProjectMeta {
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// Persistent log history. Disabled by default; see `docs/ARCHITECTURE.md`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct LogHistoryConfig {
+    #[serde(default)]
+    pub enabled: bool,
+
+    #[serde(default = "default_retention_days")]
+    pub retention_days: u32,
+
+    #[serde(default)]
+    pub max_size_mb: Option<u64>,
+}
+
+impl Default for LogHistoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            retention_days: default_retention_days(),
+            max_size_mb: None,
+        }
+    }
+}
+
+fn default_retention_days() -> u32 {
+    7
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct UnitsFile {
+    #[serde(default)]
+    pub version: Option<u32>,
+
+    #[serde(default)]
+    pub project: Option<ProjectMeta>,
+
+    #[serde(default)]
+    pub units: BTreeMap<String, Unit>,
+
+    #[serde(default)]
+    pub edges: Vec<UnitEdge>,
+
+    #[serde(default)]
+    pub log_history: LogHistoryConfig,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Workspace {
+    pub project_name: Option<String>,
+    pub units: Vec<Unit>,
+    pub edges: Vec<UnitEdge>,
+    pub legacy: bool,
+    pub log_history: LogHistoryConfig,
+}
+
+impl UnitsFile {
+    pub fn parse(content: &str) -> Result<Self, ConfigError> {
+        let mut file: UnitsFile = serde_yaml::from_str(content)?;
+        // `Unit::id` is `#[serde(skip)]`; the YAML map key carries identity.
+        for (id, unit) in file.units.iter_mut() {
+            unit.id = id.clone();
+        }
+        file.validate()?;
+        Ok(file)
+    }
+
+    fn validate(&self) -> Result<(), ConfigError> {
+        for (id, unit) in &self.units {
+            if unit.start.trim().is_empty() {
+                return Err(ConfigError::MissingCommand {
+                    service: id.clone(),
+                });
+            }
+        }
+
+        for edge in &self.edges {
+            if !self.units.contains_key(&edge.from) {
+                return Err(ConfigError::UnknownUnit {
+                    referrer: edge.from.clone(),
+                    referenced: edge.from.clone(),
+                });
+            }
+            if !self.units.contains_key(&edge.to) {
+                return Err(ConfigError::UnknownUnit {
+                    referrer: edge.from.clone(),
+                    referenced: edge.to.clone(),
+                });
+            }
+        }
+
+        self.check_cycles()
+    }
+
+    fn check_cycles(&self) -> Result<(), ConfigError> {
+        let mut adj: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for id in self.units.keys() {
+            adj.insert(id.as_str(), Vec::new());
+        }
+        for edge in &self.edges {
+            if matches!(edge.kind, UnitEdgeKind::DependsOn) {
+                adj.entry(edge.from.as_str())
+                    .or_default()
+                    .push(edge.to.as_str());
+            }
+        }
+
+        #[derive(Clone, Copy, PartialEq)]
+        enum Mark {
+            Unvisited,
+            Visiting,
+            Visited,
+        }
+
+        let mut marks: BTreeMap<&str, Mark> = self
+            .units
+            .keys()
+            .map(|k| (k.as_str(), Mark::Unvisited))
+            .collect();
+
+        fn dfs<'a>(
+            node: &'a str,
+            adj: &BTreeMap<&'a str, Vec<&'a str>>,
+            marks: &mut BTreeMap<&'a str, Mark>,
+            path: &mut Vec<&'a str>,
+        ) -> Result<(), Vec<String>> {
+            marks.insert(node, Mark::Visiting);
+            path.push(node);
+
+            if let Some(neighbours) = adj.get(node) {
+                for &next in neighbours {
+                    match marks.get(next).copied() {
+                        Some(Mark::Visiting) => {
+                            let start = path.iter().position(|&n| n == next).unwrap_or(0);
+                            let mut cycle: Vec<String> =
+                                path[start..].iter().map(|s| s.to_string()).collect();
+                            cycle.push(next.to_string());
+                            return Err(cycle);
+                        }
+                        Some(Mark::Unvisited) | None => dfs(next, adj, marks, path)?,
+                        Some(Mark::Visited) => {}
+                    }
+                }
+            }
+
+            path.pop();
+            marks.insert(node, Mark::Visited);
+            Ok(())
+        }
+
+        for id in self.units.keys() {
+            if marks.get(id.as_str()).copied() == Some(Mark::Unvisited) {
+                let mut path = Vec::new();
+                if let Err(cycle) = dfs(id.as_str(), &adj, &mut marks, &mut path) {
+                    return Err(ConfigError::CyclicDependency { cycle });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn into_workspace(self) -> Workspace {
+        let project_name = self.project.and_then(|p| p.name);
+        let units: Vec<Unit> = self.units.into_values().collect();
+        Workspace {
+            project_name,
+            units,
+            edges: self.edges,
+            legacy: false,
+            log_history: self.log_history,
+        }
+    }
+}
+
+pub fn load_workspace(path: &Path) -> Result<Workspace, ConfigError> {
+    let content = std::fs::read_to_string(path)?;
+    parse_workspace(&content)
+}
+
+pub fn parse_workspace(content: &str) -> Result<Workspace, ConfigError> {
+    let top: serde_yaml::Value = serde_yaml::from_str(content)?;
+    let map = top.as_mapping().ok_or_else(|| ConfigError::UnknownSchema {
+        hint: "expected a top-level mapping".to_string(),
+    })?;
+
+    let has_units = map.contains_key(serde_yaml::Value::String("units".into()));
+    let has_services = map.contains_key(serde_yaml::Value::String("services".into()));
+
+    if has_units {
+        let file = UnitsFile::parse(content)?;
+        return Ok(file.into_workspace());
+    }
+    if has_services {
+        let legacy = OrkesyConfig::parse(content)?;
+        return Ok(Workspace {
+            project_name: legacy.name.clone(),
+            units: legacy.to_units(),
+            edges: legacy.to_edges(),
+            legacy: true,
+            log_history: LogHistoryConfig::default(),
+        });
+    }
+
+    Err(ConfigError::UnknownSchema {
+        hint: "expected a top-level `units:` map (run `orkesy init` to generate one)".to_string(),
+    })
+}
+
+pub fn discover_workspace(start_dir: &Path) -> Result<(PathBuf, Workspace), ConfigError> {
+    let names = ["orkesy.yml", "orkesy.yaml", ".orkesy.yml", ".orkesy.yaml"];
+    let mut searched = Vec::new();
+
+    if let Ok(env_path) = std::env::var("ORKESY_CONFIG") {
+        let path = PathBuf::from(&env_path);
+        if path.exists() {
+            return Ok((path.clone(), load_workspace(&path)?));
+        }
+        searched.push(path);
+    }
+
+    let mut dir = Some(start_dir);
+    while let Some(current) = dir {
+        for name in &names {
+            let path = current.join(name);
+            if path.exists() {
+                return Ok((path.clone(), load_workspace(&path)?));
+            }
+            searched.push(path);
+        }
+        dir = current.parent();
+    }
+
+    Err(ConfigError::NotFound { searched })
+}
+
+// ---------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -495,5 +786,110 @@ services:
         assert!(db_pos < api_pos);
         assert!(db_pos < worker_pos);
         assert!(api_pos < worker_pos);
+    }
+
+    #[test]
+    fn parses_canonical_units_schema() {
+        let yaml = r#"
+version: 1
+project:
+  name: my-app
+units:
+  api:
+    kind: process
+    start: "npm run dev"
+    port: 3000
+    autostart: true
+edges: []
+"#;
+        let ws = parse_workspace(yaml).unwrap();
+        assert_eq!(ws.project_name.as_deref(), Some("my-app"));
+        assert_eq!(ws.units.len(), 1);
+        assert_eq!(ws.units[0].id, "api");
+        assert_eq!(ws.units[0].port, Some(3000));
+        assert!(!ws.legacy);
+    }
+
+    #[test]
+    fn falls_back_to_legacy_services_schema() {
+        let yaml = r#"
+name: legacy-app
+services:
+  api:
+    command: ["node", "server.js"]
+    port: 8000
+"#;
+        let ws = parse_workspace(yaml).unwrap();
+        assert_eq!(ws.project_name.as_deref(), Some("legacy-app"));
+        assert_eq!(ws.units.len(), 1);
+        assert!(ws.legacy);
+    }
+
+    #[test]
+    fn rejects_unit_with_empty_start() {
+        let yaml = r#"
+units:
+  api:
+    kind: process
+    start: ""
+"#;
+        let err = parse_workspace(yaml).unwrap_err();
+        assert!(matches!(err, ConfigError::MissingCommand { .. }));
+    }
+
+    #[test]
+    fn rejects_edge_to_unknown_unit() {
+        let yaml = r#"
+units:
+  api:
+    start: "node"
+edges:
+  - { from: api, to: db, kind: depends_on }
+"#;
+        let err = parse_workspace(yaml).unwrap_err();
+        match err {
+            ConfigError::UnknownUnit { referenced, .. } => assert_eq!(referenced, "db"),
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn detects_units_schema_cycle() {
+        let yaml = r#"
+units:
+  a: { start: "echo a" }
+  b: { start: "echo b" }
+  c: { start: "echo c" }
+edges:
+  - { from: a, to: b, kind: depends_on }
+  - { from: b, to: c, kind: depends_on }
+  - { from: c, to: a, kind: depends_on }
+"#;
+        let err = parse_workspace(yaml).unwrap_err();
+        assert!(matches!(err, ConfigError::CyclicDependency { .. }));
+    }
+
+    #[test]
+    fn rejects_file_with_neither_schema() {
+        let yaml = "version: 1\nproject: { name: foo }\n";
+        let err = parse_workspace(yaml).unwrap_err();
+        assert!(matches!(err, ConfigError::UnknownSchema { .. }));
+    }
+
+    #[test]
+    fn error_messages_are_actionable() {
+        let yaml = r#"
+units:
+  api: { start: "node" }
+edges:
+  - { from: api, to: missing_db, kind: depends_on }
+"#;
+        let err = parse_workspace(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("api"), "error should mention referrer: {msg}");
+        assert!(
+            msg.contains("missing_db"),
+            "error should mention missing unit: {msg}"
+        );
     }
 }

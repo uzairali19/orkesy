@@ -4,6 +4,12 @@ version: 1
 project:
   name: my-web-app
 
+# Persistent log history — writes per-hour JSONL files under
+# $XDG_STATE_HOME/orkesy/projects/<hash>/. Disabled by default.
+# log_history:
+#   enabled: true
+#   retention_days: 7
+
 units:
   api:
     name: "API Server"
